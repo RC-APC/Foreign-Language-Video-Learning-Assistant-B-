@@ -63,9 +63,25 @@
 #ll-panel.ll-windowed #ll-subbar,
 #ll-panel.ll-windowed #ll-list,
 #ll-panel.ll-windowed #ll-vocab,
+#ll-panel.ll-windowed #ll-review,
 #ll-panel.ll-windowed #ll-status,
-#ll-panel.ll-windowed #ll-hint,
-#ll-panel.ll-windowed #ll-toast { display: none !important; }
+#ll-panel.ll-windowed #ll-hint {
+  display: none !important;
+}
+/* 窗口化浮窗里 toast 改为静态排在字幕行下方（浮窗只有一行字幕，覆盖式会挡住正文） */
+#ll-panel.ll-windowed #ll-toast.ll-toast-on {
+  display: block;
+  position: static;
+  left: auto;
+  bottom: auto;
+  transform: none;
+  border-radius: 0 0 10px 10px;
+  text-align: center;
+  white-space: normal;
+  font-size: 11px;
+  padding: 4px 8px;
+  box-shadow: none;
+}
 #ll-panel.ll-windowed #ll-vocab-btn { display: none; }
 #ll-panel.ll-windowed #ll-live { display: block; }
 /* 窗口化浮窗显式保留「暂停」按钮，自动暂停跟读照常可用 */
@@ -182,6 +198,43 @@
   background: #eafaf0;
   font-weight: 600;
 }
+/* 实时字幕（含窗口化浮窗）里的单词同样可点：点词查释义、双击存生词 */
+#ll-live .ll-word {
+  cursor: pointer;
+  border-radius: 4px;
+  padding: 0 1px;
+  transition: background 0.15s;
+}
+#ll-live .ll-word:hover { background: #fff3bf; }
+#ll-live .ll-word.ll-saved { background: #d3f9d8; }
+/* 窗口化：这行字幕是浮窗里唯一的交互区，给足点击热区与字号 */
+#ll-panel.ll-windowed #ll-live { padding: 8px 12px; font-size: 15px; line-height: 1.5; }
+#ll-panel.ll-windowed #ll-live .ll-word { padding: 0 2px; }
+#ll-live .ll-live-main { display: block; }
+#ll-live .ll-live-sub { display: block; margin-top: 3px; font-size: 12px; font-weight: 400; color: #868e96; line-height: 1.4; }
+
+/* 对照（双语）轨道下拉框：与主轨道并列，宽度自适应 */
+#ll-track2 {
+  flex: 0 1 38%;
+  min-width: 64px;
+  font-size: 12px;
+  padding: 3px 4px;
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  background: #fff;
+  color: #1f2329;
+}
+
+#ll-diag-toolbar {
+  display: flex;
+  gap: 6px;
+  padding: 6px 2px 8px;
+  position: sticky;
+  top: 0;
+  background: #fff;
+  z-index: 2;
+  border-bottom: 1px solid #f0f0f0;
+}
 
 #ll-diag-report {
   margin: 0;
@@ -225,8 +278,8 @@
 .ll-vocab-empty { font-size: 12px; color: #99a0aa; padding: 4px 0; }
 .ll-vocab-item {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
+  flex-direction: column;
+  align-items: stretch;
   padding: 4px 6px;
   border-radius: 6px;
   background: #fff;
@@ -234,7 +287,36 @@
   margin-bottom: 4px;
   font-size: 13px;
 }
+.ll-vocab-main { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.ll-vocab-word { font-weight: 600; word-break: break-all; }
+.ll-vocab-btns { display: inline-flex; gap: 4px; flex: 0 0 auto; }
 .ll-vocab-item span { word-break: break-all; }
+.ll-vocab-tools { display: inline-flex; gap: 4px; }
+.ll-vocab-tool {
+  border: 1px solid #d0d7e2; background: #fff; color: #495057;
+  border-radius: 6px; padding: 3px 8px; cursor: pointer; font-size: 12px;
+}
+.ll-vocab-tool:hover { background: #eef1f8; }
+.ll-vocab-note-btn {
+  border: none; background: #e7f5ff; color: #1971c2;
+  border-radius: 5px; width: 22px; height: 22px; cursor: pointer; flex: 0 0 auto;
+}
+.ll-vocab-note-btn:hover { background: #d0ebff; }
+.ll-vocab-note { font-size: 12px; color: #868e96; width: 100%; margin-top: 4px; word-break: break-all; white-space: pre-wrap; }
+.ll-vocab-note-empty { color: #adb5bd; font-style: italic; }
+.ll-vocab-note-edit { width: 100%; margin-top: 4px; font-size: 12px; resize: vertical; min-height: 38px; box-sizing: border-box; }
+.ll-vocab-note-save { margin-top: 4px; align-self: flex-end; border: none; background: #4f6ef7; color: #fff; border-radius: 6px; padding: 3px 10px; cursor: pointer; font-size: 12px; }
+.ll-vocab-note-save:hover { background: #3b57d6; }
+/* 列表里主动显示的释义（来自本地词库，离线读取） */
+.ll-vocab-def { font-size: 12px; color: #495057; width: 100%; margin-top: 4px; word-break: break-word; line-height: 1.55; }
+.ll-vocab-def-loading { color: #adb5bd; font-style: italic; }
+.ll-vocab-def-hit { color: #1f2329; }
+.ll-vocab-def-miss { color: #adb5bd; font-style: italic; }
+.ll-vocab-lookup, .ll-vocab-edit {
+  border: none; background: #eef1f5; color: #495057; border-radius: 6px;
+  padding: 2px 7px; cursor: pointer; font-size: 12px; line-height: 1.4;
+}
+.ll-vocab-lookup:hover, .ll-vocab-edit:hover { background: #d0ebff; }
 .ll-vocab-del {
   border: none;
   background: #ffe3e3;
@@ -248,6 +330,7 @@
 .ll-vocab-del:hover { background: #ffc9c9; }
 
 #ll-toast {
+  display: none;
   position: absolute;
   left: 50%;
   bottom: 16px;
@@ -261,6 +344,7 @@
   box-shadow: 0 4px 16px rgba(0,0,0,0.3);
   white-space: nowrap;
 }
+#ll-toast.ll-toast-on { display: block; }
 
 #ll-review {
   position: absolute;
@@ -279,6 +363,13 @@
 .ll-rev-progress { font-size: 12px; color: #868e96; }
 .ll-rev-word { font-size: 22px; font-weight: 700; color: #1f2329; word-break: break-all; }
 .ll-rev-def { font-size: 13px; color: #495057; line-height: 1.6; max-width: 90%; }
+.ll-rev-note { font-size: 13px; color: #495057; margin-top: 6px; white-space: pre-wrap; word-break: break-all; }
+.ll-rev-addlocal {
+  border: 1px solid #ced4da; background: #f1f3f5; color: #1f2329;
+  border-radius: 6px; padding: 4px 10px; cursor: pointer; font-size: 12px; align-self: center;
+}
+.ll-rev-addlocal:hover { background: #e9ecef; }
+.ll-rev-reveal { display: flex; flex-direction: column; align-items: center; gap: 6px; max-width: 92%; margin-top: 4px; padding: 8px 10px; border-radius: 8px; background: #f8f9fa; border: 1px solid #eef0f2; }
 .ll-rev-show, .ll-rev-next {
   border: none;
   background: #4f6ef7;

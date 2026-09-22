@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>生词本 · 外语视频学习助手</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; padding: 16px; font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+      background: #f4f6f9; color: #1f2329; font-size: 14px;
+    }
+    h1 { font-size: 18px; margin: 0 0 4px; }
+    .sub { color: #868e96; font-size: 12px; margin-bottom: 12px; }
+    .bar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
+    button {
+      border: none; border-radius: 8px; padding: 7px 14px; cursor: pointer;
+      font-size: 13px; background: #4f6ef7; color: #fff;
+    }
+    button.ghost { background: #e9ecef; color: #1f2329; }
+    button.danger { background: #ffe3e3; color: #c92a2a; }
+    .stat { font-size: 12px; color: #495057; margin-bottom: 10px; }
+    .item {
+      background: #fff; border: 1px solid #eef0f2; border-radius: 10px;
+      padding: 10px 12px; margin-bottom: 8px;
+    }
+    .item-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .word { font-weight: 700; font-size: 16px; word-break: break-all; }
+    .meta { font-size: 11px; color: #adb5bd; }
+    .note { font-size: 13px; color: #495057; margin-top: 6px; white-space: pre-wrap; word-break: break-all; }
+    .note.empty { color: #adb5bd; font-style: italic; }
+    /* 列表内主动显示的释义（来自本地词库，离线） */
+    .def { font-size: 13px; color: #495057; margin-top: 5px; line-height: 1.55; word-break: break-word; }
+    .def.hit { color: #1f2329; }
+    .def.miss { color: #adb5bd; font-style: italic; }
+    textarea.note-edit {
+      width: 100%; margin-top: 6px; font-size: 13px; min-height: 42px; resize: vertical;
+      border: 1px solid #ced4da; border-radius: 6px; padding: 6px; font-family: inherit;
+    }
+    .item-actions { display: flex; gap: 6px; margin-top: 6px; }
+    .item-actions button { padding: 4px 10px; font-size: 12px; }
+    .empty-tip { color: #868e96; text-align: center; padding: 30px 0; }
+
+    /* 复习 overlay */
+    #review {
+      position: fixed; inset: 0; background: #fff; z-index: 10;
+      display: none; flex-direction: column; align-items: center; justify-content: center;
+      gap: 12px; padding: 20px; text-align: center;
+    }
+    #review.show { display: flex; }
+    .rev-progress { font-size: 12px; color: #868e96; }
+    .rev-word { font-size: 24px; font-weight: 700; word-break: break-all; }
+    .rev-reveal {
+      display: flex; flex-direction: column; align-items: center; gap: 6px;
+      max-width: 92%; margin-top: 4px; padding: 10px 12px; border-radius: 8px;
+      background: #f8f9fa; border: 1px solid #eef0f2;
+    }
+    .rev-def { font-size: 14px; color: #495057; line-height: 1.6; }
+    .rev-note { font-size: 13px; color: #495057; white-space: pre-wrap; word-break: break-all; }
+    .rev-actions { display: flex; gap: 10px; }
+    .rev-yes { background: #2f9e44; }
+    .rev-no { background: #e03131; }
+    .rev-done { font-size: 20px; font-weight: 700; }
+  </style>
+</head>
+<body>
+  <h1>📚 生词本</h1>
+  <div class="sub">本地存储 · 无需账号 · 可单独复习，不依赖视频页</div>
+
+  <div class="bar">
+    <button id="btn-review">🎯 开始复习</button>
+    <button class="ghost" id="btn-export">导出备份</button>
+    <button class="ghost" id="btn-import">导入</button>
+    <button class="ghost" id="btn-dict">📖 本地词库</button>
+    <input type="file" id="file-import" accept="application/json" style="display:none" />
+  </div>
+
+  <div class="stat" id="stat"></div>
+  <div id="list"></div>
+
+  <div id="dict" style="display:none;">
+    <h2 style="font-size:16px;margin:4px 0;">📖 本地词库（离线释义）</h2>
+    <div class="sub">网络词典拉不到时，会自动回退到这里。复习时也能一键补充。</div>
+    <div class="bar" style="margin-top:8px;align-items:center;">
+      <input id="dict-word" placeholder="单词" style="width:110px;padding:7px;border:1px solid #ced4da;border-radius:8px;font-size:13px;" />
+      <input id="dict-pos" placeholder="词性(可选)" style="width:90px;padding:7px;border:1px solid #ced4da;border-radius:8px;font-size:13px;" />
+      <input id="dict-def" placeholder="释义（必填）" style="flex:1;min-width:140px;padding:7px;border:1px solid #ced4da;border-radius:8px;font-size:13px;" />
+      <button id="dict-add">添加</button>
+      <label style="display:flex;align-items:center;gap:4px;font-size:12px;color:#495057;white-space:nowrap;">
+        <input type="checkbox" id="dict-replace" /> 导入前清空
+      </label>
+      <button class="ghost" id="btn-dict-import">📥 导入词典</button>
+      <button class="danger" id="btn-dict-clear">🗑 清空词库</button>
+      <input type="file" id="file-dict" accept=".txt,.csv,.tsv,.json,text/plain" style="display:none" />
+    </div>
+    <div class="sub" style="margin-top:6px;">支持牛津/CSDN 等下载的 TXT 词典（每行一个单词，下接 <code>n./v./a./ad./abbr.</code> 等词性释义行，自动识别 GBK 编码）；也支持纯文本 <code>单词&lt;TAB或空格或冒号&gt;释义</code> 及 JSON。勾「导入前清空」可整本替换；「🗑 清空词库」一键删除全部。</div>
+    <div id="dict-list"></div>
+  </div>
+
+  <div id="review">
+    <div class="rev-progress" id="rev-progress"></div>
+    <div class="rev-word" id="rev-word"></div>
+    <div class="rev-reveal" id="rev-reveal" style="display:none;">
+      <div class="rev-def" id="rev-def"></div>
+      <div class="rev-note" id="rev-note"></div>
+      <button class="ghost" id="rev-addlocal" style="margin-top:4px;">✎ 存本地释义</button>
+    </div>
+    <div class="rev-actions" id="rev-actions">
+      <button class="rev-no" id="rev-no">✗ 不记得</button>
+      <button class="rev-yes" id="rev-yes">✓ 记得</button>
+    </div>
+    <button id="rev-next" style="display:none;">下一个 →</button>
+  </div>
+
+  <script src="vocab.js"></script>
+</body>
+</html>

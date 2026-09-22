@@ -1,14 +1,18 @@
 {
   "manifest_version": 3,
   "name": "外语视频学习助手",
-  "version": "0.7.10",
-  "description": "在 B 站看外语视频时辅助学习：右侧字幕列表逐句跟读，点词查词（可联动本机欧路词典），双击存生词并按记忆曲线复习，支持单句音频下载。数据全部存本地，无需账号。支持 Chrome / Edge / 夸克。",
-  "permissions": ["storage", "activeTab", "tabCapture", "downloads"],
+  "version": "0.7.25",
+  "description": "在 B 站 / YouTube 看外语视频时辅助学习：右侧字幕列表逐句跟读，点词查词（可联动本机欧路词典 / 导入本地词库），双击存生词、加注释、按记忆曲线复习，支持单句音频下载与生词导出备份。数据全部存本地，无需账号。支持 Chrome / Edge / 夸克 / Kiwi。",
+  "permissions": ["storage", "unlimitedStorage", "activeTab", "tabCapture", "downloads"],
   "host_permissions": [
     "https://www.bilibili.com/*",
     "https://api.bilibili.com/*",
     "https://*.hdslb.com/*",
-    "https://api.dictionaryapi.dev/*"
+    "https://www.youtube.com/*",
+    "https://m.youtube.com/*",
+    "https://youtu.be/*",
+    "https://api.dictionaryapi.dev/*",
+    "https://en.wiktionary.org/*"
   ],
   "content_scripts": [
     {
@@ -17,11 +21,24 @@
         "https://www.bilibili.com/bangumi/*",
         "https://www.bilibili.com/*",
         "https://player.bilibili.com/*",
-        "https://m.bilibili.com/*"
+        "https://m.bilibili.com/*",
+        "https://www.youtube.com/*",
+        "https://m.youtube.com/*",
+        "https://youtu.be/*"
       ],
       "js": ["content.js"],
       "css": ["content.css"],
       "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://www.youtube.com/*",
+        "https://m.youtube.com/*"
+      ],
+      "js": ["yt-main.js"],
+      "run_at": "document_start",
+      "world": "MAIN",
+      "all_frames": false
     }
   ],
   "background": {
@@ -30,5 +47,6 @@
   "action": {
     "default_popup": "popup.html",
     "default_title": "外语视频学习助手"
-  }
+  },
+  "options_page": "vocab.html"
 }
