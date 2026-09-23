@@ -13,7 +13,19 @@
   let liveKey = '';       // 实时字幕已渲染的 key：同一个 key 不重写 DOM，避免每帧把弹出的释义冲掉
   let pendingPauseAt = null;
   let lastAutoPauseTo = null;
-  let activeRecorder = null;
+  // 自动暂停 / 点句复读会把视频正好停在「上一句的 to」上。若此时按 currentTime 取"最后一条 from<=t"，
+  // 会取到还没播的下一句 → 实时行（以及小窗里的 ▶ / 🎤）跳到下一句，出现"点播放是这句、点录音变下一句"。
+  // 所以停住时把那一行"锁住"，播放 / 拖动进度后自动解锁。
+  let stickyPauseCue = null;
+  let liveShadowTools = true;    // 小窗模式下实时行下方的 ▶ / 🎤 跟读按钮是否显示
+  let activeRecorder = null;     // 录制中的 MediaRecorder（跟读打分）
+  let activeRecStream = null;    // getUserMedia 的麦克风流
+  let activeRecognition = null;  // Web Speech 语音识别实例
+  let activeRecRow = null;       // 正在录音的行元素
+  let activeRecCue = null;
+  let activeRecTimer = null;     // 录音计时器
+  let activeRecChunks = null;    // MediaRecorder 数据块
+  let activeRecTranscript = '';  // 语音识别累积文本
   let videoWired = false;
 
   // API 字幕相关
@@ -68,7 +80,7 @@
     return new Promise((resolve) => {
       // 关键：无论回调里发生什么都必须 resolve()，否则 init() 会永久挂起 → 面板不出现。
       try {
-        chrome.storage.sync.get(['enabled', 'autoPause', 'dictSource', 'eudicAction', 'autoTranslate', 'trEngine', 'translateTarget', 'panelOpacity', 'textOpacity'], (r) => {
+        chrome.storage.sync.get(['enabled', 'autoPause', 'dictSource', 'eudicAction', 'autoTranslate', 'trEngine', 'translateTarget', 'panelOpacity', 'textOpacity', 'liveShadow'], (r) => {
           try {
             settings.enabled = r.enabled !== false;
             settings.autoPause = !!r.autoPause;
@@ -82,6 +94,7 @@
             uiLang = I18N[translateTarget] ? translateTarget : 'zh-CN';   // 界面语言跟随母语（仅内置四语，其余回退中文）
             panelOpacity = (typeof r.panelOpacity === 'number' && r.panelOpacity > 0) ? r.panelOpacity : 0.85;
             textOpacity = (typeof r.textOpacity === 'number' && r.textOpacity >= 0) ? r.textOpacity : 1;
+            liveShadowTools = r.liveShadow !== false;
           } catch (e) { log('应用设置出错（用默认值继续）', e); }
           resolve();
         });
@@ -100,11 +113,12 @@
       pauseOn: '暂停：开', pauseOff: '暂停：关', pauseTitle: '开启后每行字幕自动暂停',
       popTitle: '窗口化（拖动标题栏可移动面板）', popTitleOn: '恢复固定到右侧',
       minTitle: '最小化面板（收成小条）', expandTitle: '展开面板',
+      shadowTitle: '小窗模式：显示 / 隐藏实时行下方的 ▶ 与 🎤 跟读按钮',
       trackLabel: '字幕轨道', trackLoading: '加载中…', trackNone: '（无可选 CC 轨道）',
       track2Title: '对照轨道（双语同时显示，窗口化浮窗里叠两行）', track2None: '对照：无',
       reloadTitle: '重新获取字幕列表',
       trTitle: '把当前字幕轨道翻译成中文，生成一条新的「中文（AI 翻译）」轨道', trBtn: '译中文',
-      hint: '点 ▶ 跟读该行 · 点单词查释义 · 双击单词存生词 · 点 ⬇ 下载该行音频',
+      hint: '点 ▶ 跟读该行 · 点 🎤 录音打分 · 点单词查释义 · 双击单词存生词',
       vocabHead: '共 {n} 词 · 待复习 {d}', vocabEmpty: '还没有保存单词。在字幕里双击单词即可加入。',
       dictLoading: '查询中…', dictNotFound: '未找到释义。内置词库主要收录英文；其它语种请在设置中配置「整句翻译」。',
       dictTip: '双击单词可存入生词本', dictTipLlm: '双击单词可存入生词本（自动带译文注释）',
@@ -117,6 +131,7 @@
       pauseOn: 'Pause: On', pauseOff: 'Pause: Off', pauseTitle: 'Auto-pause on each subtitle line when on',
       popTitle: 'Pop out (drag the title bar to move)', popTitleOn: 'Dock back to the right',
       minTitle: 'Minimize panel (to a small bar)', expandTitle: 'Expand panel',
+      shadowTitle: 'Small window: show / hide the ▶ and 🎤 shadowing buttons under the live line',
       trackLabel: 'Subtitle track', trackLoading: 'Loading…', trackNone: '(no CC track)',
       track2Title: 'Reference track (dual subtitles, stacked in popup)', track2None: 'Ref: none',
       reloadTitle: 'Reload subtitle list',
@@ -135,6 +150,7 @@
       pauseOn: '一時停止：オン', pauseOff: '一時停止：オフ', pauseTitle: 'オンのとき各行字幕で自動一時停止',
       popTitle: 'ポップアウト（タイトルバーをドラッグで移動）', popTitleOn: '右側に戻す',
       minTitle: 'パネルを最小化（小さいバーに）', expandTitle: 'パネルを展開',
+      shadowTitle: '小窓モード：リアルタイム行の下の ▶ と 🎤 ボタンを表示 / 非表示',
       trackLabel: '字幕トラック', trackLoading: '読み込み中…', trackNone: '（CC トラックなし）',
       track2Title: '参照トラック（二か国語表示、ポップアップで重ねる）', track2None: '参照：なし',
       reloadTitle: '字幕リストを再取得',
@@ -153,6 +169,7 @@
       pauseOn: '일시정지: 켜짐', pauseOff: '일시정지: 꺼짐', pauseTitle: '켜면 자막 한 줄마다 자동 일시정지',
       popTitle: '팝아웃(제목 표시줄을 드래그해 이동)', popTitleOn: '오른쪽에 고정',
       minTitle: '패널 최소화(작은 줄로)', expandTitle: '패널 펼치기',
+      shadowTitle: '작은 창 모드: 실시간 줄 아래의 ▶ 와 🎤 버튼 표시 / 숨기기',
       trackLabel: '자막 트랙', trackLoading: '불러오는 중…', trackNone: '(CC 트랙 없음)',
       track2Title: '대조 트랙(두 언어 동시 표시, 팝업에서 겹침)', track2None: '대조: 없음',
       reloadTitle: '자막 목록 다시 가져오기',
@@ -495,6 +512,7 @@
         <span class="ll-title">${t('panelTitle')}</span>
         <button id="ll-vocab-btn" class="ll-btn" title="查看/管理生词本">${t('vocabBtn')}</button>
         <button id="ll-pause" class="ll-btn" title="${t('pauseTitle')}">${t('pauseOff')}</button>
+        <button id="ll-shadow" class="ll-btn" title="${t('shadowTitle')}">🎤</button>
         <button id="ll-pop" class="ll-btn" title="${t('popTitle')}">▢</button>
         <button id="ll-min" class="ll-btn" title="${t('minTitle')}">－</button>
       </div>
@@ -529,6 +547,7 @@
     function setWindowed(on) {
       if (panel.classList.contains('ll-windowed') === on) return false;
       panel.classList.toggle('ll-windowed', on);
+      liveKey = '';   // 强制重建实时行：小窗态要补上 ▶ / 🎤 跟读按钮，退出时要去掉
       if (on) {
         const r = panel.getBoundingClientRect();
         panel.style.left = Math.round(r.left) + 'px';
@@ -578,6 +597,22 @@
       e.target.textContent = (settings.autoPause ? t('pauseOn') : t('pauseOff'));
     };
     if (settings.autoPause) document.getElementById('ll-pause').textContent = '暂停：开';
+    // 小窗跟读按钮的显隐开关（只在窗口化态可见）：关掉后浮窗就只剩一行干净的字幕
+    function refreshShadowBtn() {
+      const b = document.getElementById('ll-shadow');
+      if (!b) return;
+      b.classList.toggle('ll-off', !liveShadowTools);
+      b.title = t('shadowTitle');
+    }
+    document.getElementById('ll-shadow').onclick = () => {
+      liveShadowTools = !liveShadowTools;
+      chrome.storage.sync.set({ liveShadow: liveShadowTools });
+      refreshShadowBtn();
+      liveKey = '';          // 强制重画实时行（带 / 不带跟读按钮）
+      updateLive();
+      showToast(liveShadowTools ? '🎤 小窗跟读按钮：显示' : '🎤 小窗跟读按钮：已隐藏');
+    };
+    refreshShadowBtn();
     document.getElementById('ll-reload').onclick = () => { loadSubtitles(); };
     document.getElementById('ll-tr').onclick = onTranslateClick;
     document.getElementById('ll-track').onchange = (e) => {
@@ -832,14 +867,18 @@
       text.className = 'll-text';
       wrapWords(text, cue.text);
 
-      const dl = document.createElement('button');
-      dl.className = 'll-dl';
-      dl.textContent = '⬇';
-      dl.title = '下载这一行音频（webm）';
+      const rec = document.createElement('button');
+      rec.className = 'll-rec';
+      rec.textContent = '🎤';
+      rec.title = '跟读打分：录下你读的这一句，识别并给出相似度';
+
+      const res = document.createElement('div');
+      res.className = 'll-rec-result';
 
       row.appendChild(play);
       row.appendChild(text);
-      row.appendChild(dl);
+      row.appendChild(rec);
+      row.appendChild(res);
       list.appendChild(row);
     });
     updateHighlight();
@@ -865,6 +904,14 @@
   function currentCursorCue() {
     const v = getVideo();
     const t = v ? v.currentTime : 0;
+    // 停住时（自动暂停 / 点句复读都会正好停在上一句的 to）优先返回被锁住的那一行。
+    // 否则 t 恰好等于上一句的 to == 下一句的 from，下面的循环会取到"下一句"，
+    // 于是小窗里的 ▶ 播的是这一句、🎤 却指向下一句，跟读对不上。
+    // 顺手用 index 校验它还是当前这份 cues 里的对象（切轨道 / 换视频后旧对象就失效了）
+    if (v && v.paused && stickyPauseCue && cues[stickyPauseCue.index] === stickyPauseCue &&
+        t >= stickyPauseCue.from - 0.25 && t <= stickyPauseCue.to + 1.2) {
+      return stickyPauseCue;
+    }
     let cur = null;
     for (const c of cues) {
       if (c.from <= t) cur = c;
@@ -889,6 +936,11 @@
   function cursorCueFrom(arr) {
     const v = getVideo();
     const t = v ? v.currentTime : 0;
+    // 与主轨同一套「停住时不下滑到下一句」的规则：双语时两行才对得上（同一 index 通常就是同一句）
+    if (v && v.paused && stickyPauseCue && arr === cues2) {
+      const c2 = arr[stickyPauseCue.index];
+      if (c2 && t >= c2.from - 0.25 && t <= c2.to + 1.2) return c2;
+    }
     let cur = null;
     for (const c of arr) {
       if (c.from <= t) cur = c;
@@ -902,6 +954,8 @@
   function updateLive() {
     const liveEl = document.getElementById('ll-live');
     if (!liveEl) return;
+    // 录音进行中：冻结实时行，否则下一帧重写 DOM 会把录音按钮和结果区冲掉
+    if (activeRecorder) return;
     if (!cues.length && !cues2.length) {
       if (liveKey === 'empty') return;
       liveKey = 'empty';
@@ -934,6 +988,28 @@
       sub.className = 'll-live-sub';
       wrapWords(sub, cur2.text.slice(0, 200));
       frag.appendChild(sub);
+    }
+    // 小窗（窗口化）模式下没有列表行，这里补一套「▶ 播放 + 🎤 跟读打分」，让录音评分也能用。
+    // 复用列表行的录音实现：把 liveEl 当作 "row"（它内部有 .ll-rec 按钮与 .ll-rec-result 结果区）。
+    if (cur && panel && panel.classList.contains('ll-windowed') && liveShadowTools) {
+      const tools = document.createElement('div');
+      tools.className = 'll-live-tools';
+      const play = document.createElement('button');
+      play.className = 'll-play';
+      play.textContent = '▶';
+      play.title = '播放原句';
+      play.onclick = (ev) => { ev.stopPropagation(); shadow(cur); };
+      const recBtn = document.createElement('button');
+      recBtn.className = 'll-rec';
+      recBtn.textContent = '🎤';
+      recBtn.title = '跟读打分：录下你读的这一句，识别并给出相似度';
+      recBtn.onclick = (ev) => { ev.stopPropagation(); toggleRecord(cur, liveEl); };
+      tools.appendChild(play);
+      tools.appendChild(recBtn);
+      const res = document.createElement('div');
+      res.className = 'll-rec-result';
+      frag.appendChild(tools);
+      frag.appendChild(res);
     }
     try { liveEl.replaceChildren(frag); }
     catch (err) { liveEl.textContent = ''; liveEl.appendChild(frag); }
@@ -1037,7 +1113,7 @@
     const cue = cues.find((c) => c.index === Number(row.dataset.idx));
     if (!cue) return;
 
-    if (e.target.closest('.ll-dl')) { downloadAudio(cue); return; }
+    if (e.target.closest('.ll-rec')) { toggleRecord(cue, row); return; }
     if (e.target.closest('.ll-play')) { shadow(cue); return; }
     if (e.target.closest('.ll-word')) { handleWordTap(e.target); return; }
     shadow(cue);
@@ -1410,6 +1486,8 @@
     // 「暂停：开」→ 本句放完自动暂停；「暂停：关」→ 从该句起连续播放（不打断）
     pendingPauseAt = settings.autoPause ? cue.to : null;
     lastAutoPauseTo = null;
+    // 会自动停住 → 锁住这一行，避免停下瞬间实时行跳到下一句（小窗里 ▶ 与 🎤 因此对不上）
+    stickyPauseCue = settings.autoPause ? cue : null;
     v.currentTime = cue.from;
     v.play();
   }
@@ -1485,6 +1563,158 @@
     a.href = url;
     a.download = filename;
     document.body.appendChild(a); a.click(); a.remove();
+  }
+
+  // ---------- 整句跟读打分 ----------
+  // 思路：点 🎤 用麦克风录下用户跟读（MediaRecorder，仅录人声，不录视频声）；
+  // 同时用浏览器内置语音识别（Web Speech API）把用户说的话转成文字（"识别"）；
+  // 文字与目标句做逐词相似度，停止录音立即出分（本地计算，不发网络请求）。
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+  function recLang() {
+    const t = subtitleTracks[selectedTrack];
+    const lan = (t && t.lan) || 'en';
+    const map = { en: 'en-US', ja: 'ja-JP', ko: 'ko-KR', zh: 'zh-CN', fr: 'fr-FR', de: 'de-DE', es: 'es-ES', ru: 'ru-RU', pt: 'pt-BR', it: 'it-IT' };
+    return map[lan] || (lan.length <= 2 ? (lan + '-' + lan.toUpperCase()) : lan) || 'en-US';
+  }
+  // 归一化：小写、去标点、折叠空白
+  function norm(s) {
+    return String(s || '').toLowerCase().replace(/[^\p{L}\p{N}'’]/gu, ' ').replace(/\s+/g, ' ').trim();
+  }
+  function lev(a, b) {
+    a = a || ''; b = b || '';
+    const m = a.length, n = b.length;
+    if (!m) return n; if (!n) return m;
+    const dp = Array.from({ length: m + 1 }, (_, i) => [i].concat(new Array(n).fill(0)));
+    for (let j = 0; j <= n; j++) dp[0][j] = j;
+    for (let i = 1; i <= m; i++)
+      for (let j = 1; j <= n; j++)
+        dp[i][j] = Math.min(
+          dp[i - 1][j] + 1,
+          dp[i][j - 1] + 1,
+          dp[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)
+        );
+    return dp[m][n];
+  }
+  // 逐词 F1 相似度：目标句每个词在识别文本里找到精确 / 编辑距离≤1 的匹配即算命中
+  function scoreSimilarity(target, recognized) {
+    const t = norm(target).split(' ').filter(Boolean);
+    const r = norm(recognized).split(' ').filter(Boolean);
+    if (!t.length) return 0;
+    const left = r.slice();
+    let hit = 0;
+    for (const tw of t) {
+      const i = left.findIndex((rw) => rw === tw || lev(tw, rw) <= 1);
+      if (i >= 0) { hit++; left.splice(i, 1); }
+    }
+    const precision = r.length ? hit / r.length : 0;
+    const recall = hit / t.length;
+    const f1 = (precision + recall) ? (2 * precision * recall) / (precision + recall) : 0;
+    return Math.round(f1 * 100);
+  }
+  function cleanupRec() {
+    if (activeRecStream) { activeRecStream.getTracks().forEach((t) => t.stop()); activeRecStream = null; }
+    if (activeRecognition) { try { activeRecognition.stop(); } catch (e) {} activeRecognition = null; }
+    if (activeRecTimer) { clearInterval(activeRecTimer); activeRecTimer = null; }
+    const btn = activeRecRow && activeRecRow.querySelector('.ll-rec');
+    if (btn) { btn.classList.remove('recording'); btn.textContent = '🎤'; }
+    activeRecorder = null; activeRecRow = null; activeRecCue = null; activeRecChunks = null; activeRecTranscript = '';
+  }
+  function toggleRecord(cue, row) {
+    if (activeRecRow === row && activeRecorder) { stopRec(); return; }
+    if (activeRecorder) stopRec();
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      showToast('当前页面不支持麦克风录音（需 HTTPS，如 B站 / YouTube 页面）。');
+      return;
+    }
+    startRec(cue, row);
+  }
+  async function startRec(cue, row) {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      activeRecStream = stream;
+      activeRecChunks = [];
+      activeRecTranscript = '';
+      activeRecCue = cue; activeRecRow = row;
+      const rec = new MediaRecorder(stream);
+      rec.ondataavailable = (e) => { if (e.data && e.data.size) activeRecChunks.push(e.data); };
+      activeRecorder = rec;
+      rec.start();
+      // 语音识别（识别用户说的文字）
+      const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (SR) {
+        const sr = new SR();
+        sr.lang = recLang();
+        sr.interimResults = true;
+        sr.continuous = false;
+        sr.onresult = (ev) => {
+          let t = '';
+          for (let i = ev.resultIndex; i < ev.results.length; i++) t += ev.results[i][0].transcript;
+          activeRecTranscript = t;
+          const rEl = row.querySelector('.ll-rec-result .ll-rec-recog');
+          if (rEl) rEl.textContent = '识别中：' + t;
+        };
+        sr.onerror = () => {};
+        sr.onend = () => {};
+        activeRecognition = sr;
+        try { sr.start(); } catch (e) {}
+      }
+      const btn = row.querySelector('.ll-rec');
+      if (btn) { btn.classList.add('recording'); btn.textContent = '■'; btn.title = '录音中 · 点此停止'; }
+      showToast('🎤 录音中…跟读这一句，点 ■ 停止');
+      const t0 = Date.now();
+      if (activeRecTimer) clearInterval(activeRecTimer);
+      activeRecTimer = setInterval(() => {
+        const s = Math.floor((Date.now() - t0) / 1000);
+        if (btn) btn.title = '录音中 ' + s + 's · 点此停止';
+      }, 500);
+    } catch (err) {
+      showToast('麦克风开启失败：' + (err && err.message ? err.message : err));
+      cleanupRec();
+    }
+  }
+  function stopRec() {
+    if (!activeRecorder) return;
+    clearInterval(activeRecTimer); activeRecTimer = null;
+    const rec = activeRecorder;
+    const row = activeRecRow, cue = activeRecCue;
+    const transcript = (activeRecTranscript || '').trim();
+    const chunks = activeRecChunks;
+    try { if (activeRecognition && activeRecognition.state !== 'inactive') activeRecognition.stop(); } catch (e) {}
+    activeRecognition = null;
+    rec.onstop = () => {
+      const blob = new Blob(chunks, { type: rec.mimeType || 'audio/webm' });
+      const url = blob.size ? URL.createObjectURL(blob) : null;
+      finishScoring(cue, row, transcript, url);
+    };
+    try { if (rec.state !== 'inactive') rec.stop(); } catch (e) {}
+    if (activeRecStream) { activeRecStream.getTracks().forEach((t) => t.stop()); activeRecStream = null; }
+    const btn = row && row.querySelector('.ll-rec');
+    if (btn) { btn.classList.remove('recording'); btn.textContent = '🎤'; btn.title = '跟读打分：录下你读的这一句，AI 评分识别相似度'; }
+    activeRecorder = null;
+    showToast('⏳ 识别并打分中…');
+  }
+  function finishScoring(cue, row, transcript, audioUrl) {
+    const target = (cue && cue.text) || '';
+    const base = scoreSimilarity(target, transcript);
+    const rEl = row && row.querySelector('.ll-rec-result');
+    if (!rEl) return;
+    rEl.classList.add('show');
+    rEl.innerHTML =
+      '<div>识别：<span class="ll-rec-recog">' + (transcript ? esc(transcript) : '（未识别到语音——请确认浏览器允许语音识别，或换 Chrome / Edge；录音仍可回放）') + '</span></div>' +
+      '<div>相似度：<span class="ll-rec-score">' + base + '%</span><span class="ll-rec-base">（逐词比对）</span></div>' +
+      '<div class="ll-rec-actions">' +
+        (audioUrl ? '<button data-act="mine">🔁 我的录音</button>' : '') +
+        '<button data-act="orig">🔁 原句</button>' +
+        '<button data-act="again">↺ 再读一次</button>' +
+      '</div>';
+    const scoreEl = rEl.querySelector('.ll-rec-score');
+    scoreEl.className = 'll-rec-score ' + (base >= 80 ? 'sc-good' : base >= 60 ? 'sc-ok' : 'sc-bad');
+    rEl.querySelector('[data-act="orig"]').onclick = () => shadow(cue);
+    if (audioUrl) rEl.querySelector('[data-act="mine"]').onclick = () => new Audio(audioUrl).play();
+    rEl.querySelector('[data-act="again"]').onclick = () => { rEl.classList.remove('show'); rEl.innerHTML = ''; toggleRecord(cue, row); };
   }
 
   // ---------- 查词弹窗 ----------
@@ -1697,6 +1927,7 @@
       }
     }
     cues = parsed.cues;
+    stickyPauseCue = null;   // 字幕换了，旧的"锁住行"对象作废
     liveKey = '';   // 换轨道 / 换视频后强制重建实时字幕行
     dataReady = true; loadFailed = false;
     selectedTrack = (selectedTrack >= 0 && selectedTrack < subtitleTracks.length) ? selectedTrack : 0;
@@ -2183,8 +2414,20 @@
     if (v.__llWired) { videoWired = true; return; }
     v.__llWired = true;
     videoWired = true;
+    // 手动拖动进度条 → 解除"停住的那一行"，实时行重新跟随播放位置。
+    // （shadow() 自己也会做一次程序化 seek，但那之后必然是一次暂停，暂停时会重新锁上，不受影响。）
+    v.addEventListener('seeked', () => { stickyPauseCue = null; });
     v.addEventListener('timeupdate', () => {
-      if (pendingPauseAt != null && v.currentTime >= pendingPauseAt) { v.pause(); pendingPauseAt = null; lastAutoPauseTo = null; }
+      if (pendingPauseAt != null && v.currentTime >= pendingPauseAt) {
+        const at = pendingPauseAt;
+        v.pause(); pendingPauseAt = null; lastAutoPauseTo = null;
+        // 记住"刚停在哪一句"：t 会正好压在「上一句 to == 下一句 from」的边界上，
+        // 不锁住的话实时行（和它的 ▶ / 🎤）会立刻滑到还没播的下一句。
+        stickyPauseCue = cues.find((c) => Math.abs(c.to - at) < 0.05) || stickyPauseCue;
+      }
+      // 恢复播放就解除锁定：否则"停在一句 → 继续播 → 手动暂停"时会一直显示上一句。
+      // 之后每一次自动暂停都会按 pendingPauseAt 重新锁定，不受影响。
+      if (!v.paused) stickyPauseCue = null;
       updateHighlight();
       updateLive();
       if (settings.autoPause && !v.paused && cues.length) {
@@ -2379,23 +2622,14 @@
     lines.push.apply(lines, dumpInitialState());
 
     // 诊断结果覆盖列表区时，必须留一条回字幕列表的路（否则只能刷新页面）
-    const render = () => {
-      const list = document.getElementById('ll-list');
-      if (!list) return;
-      list.innerHTML =
-        '<div id="ll-diag-toolbar">' +
-          '<button id="ll-diag-back" class="ll-btn">← 返回字幕列表</button>' +
-          '<button id="ll-diag-copy" class="ll-btn">复制报告</button>' +
-        '</div>' +
-        '<pre id="ll-diag-report"></pre>';
-      const pre = document.getElementById('ll-diag-report');
-      if (pre) pre.textContent = lines.join('\n');
-      const back = document.getElementById('ll-diag-back');
+    // 顶部 + 底部各放一个工具条：报告很长滚到哪都能看到「返回」按钮
+    const bindToolbar = (prefix) => {
+      const back = document.getElementById(prefix + '-back');
       if (back) back.onclick = () => {
         renderList();
         setStatus('已返回字幕列表。');
       };
-      const cp = document.getElementById('ll-diag-copy');
+      const cp = document.getElementById(prefix + '-copy');
       if (cp) cp.onclick = () => {
         const text = lines.join('\n');
         const done = () => showToast('✓ 诊断报告已复制到剪贴板');
@@ -2406,13 +2640,30 @@
         } catch (e) { fallbackCopy(text, done); }
       };
     };
+    const toolbarHtml = (prefix) =>
+      '<div id="' + prefix + '" class="ll-diag-toolbar">' +
+        '<button id="' + prefix + '-back" class="ll-btn">返回字幕列表</button>' +
+        '<button id="' + prefix + '-copy" class="ll-btn">复制报告</button>' +
+      '</div>';
+    const render = () => {
+      const list = document.getElementById('ll-list');
+      if (!list) return;
+      list.innerHTML =
+        toolbarHtml('ll-diag-top') +
+        '<pre id="ll-diag-report"></pre>' +
+        toolbarHtml('ll-diag-bottom');
+      const pre = document.getElementById('ll-diag-report');
+      if (pre) pre.textContent = lines.join('\n');
+      bindToolbar('ll-diag-top');
+      bindToolbar('ll-diag-bottom');
+    };
     render();
     setStatus('诊断中：正在探测页面字幕层（约 2 秒）…');
     try { await probeSubtitleLayer(lines); } catch (e) { lines.push('字幕层探测异常: ' + e.message); }
     render();
     const report = lines.join('\n');
     console.log('[LangLearn] 诊断报告\n' + report);
-    setStatus('诊断完成：结果在列表区（点「← 返回字幕列表」回字幕；点「复制报告」可整段复制），截图或粘贴发我即可。');
+    setStatus('诊断完成：结果已显示在下方列表区，点报告顶部或底部的「返回字幕列表」按钮即可回字幕（不是键盘左箭头）；「复制报告」可整段复制发我。');
   }
 
   // 剪贴板兜底（部分内核不给 navigator.clipboard）
@@ -2462,6 +2713,13 @@
       textOpacity = (typeof r.textOpacity === 'number' && r.textOpacity >= 0) ? r.textOpacity : 1;
       const btn = document.getElementById('ll-pause');
       if (btn) btn.textContent = (settings.autoPause ? t('pauseOn') : t('pauseOff'));
+      // 小窗跟读按钮的显隐（可能由另一个标签页 / 设置页改动）。只在真的变了才重画，
+      // 否则轮询兜底每次都会重建实时行，把用户刚点开的释义弹层冲掉。
+      const prevShadow = liveShadowTools;
+      liveShadowTools = r.liveShadow !== false;
+      const sbtn = document.getElementById('ll-shadow');
+      if (sbtn) { sbtn.classList.toggle('ll-off', !liveShadowTools); sbtn.title = t('shadowTitle'); }
+      if (prevShadow !== liveShadowTools) { liveKey = ''; try { updateLive(); } catch (e) {} }
       applyPanelOpacity();
       // 切到「本地欧路词典」时提醒一次：点词将唤起欧路应用查词
       if (prevDict !== 'eudic' && dictSource === 'eudic') {
@@ -2471,7 +2729,7 @@
   }
 
   function syncSettings() {
-    chrome.storage.sync.get(['enabled', 'autoPause', 'dictSource', 'eudicAction', 'autoTranslate', 'trEngine', 'translateTarget', 'panelOpacity', 'textOpacity'], (r) => {
+    chrome.storage.sync.get(['enabled', 'autoPause', 'dictSource', 'eudicAction', 'autoTranslate', 'trEngine', 'translateTarget', 'panelOpacity', 'textOpacity', 'liveShadow'], (r) => {
       if (chrome.runtime.lastError) return;
       applySettings(r);
     });
@@ -2487,7 +2745,7 @@
     try { setTrButton(false); } catch (e) {}
     cues = []; cues2 = []; subtitleTracks = []; selectedTrack = -1; selectedTrack2 = -1; liveKey = '';
     dataReady = false; loadFailed = false; usingDomFallback = false;
-    pendingPauseAt = null; lastAutoPauseTo = null;
+    pendingPauseAt = null; lastAutoPauseTo = null; stickyPauseCue = null;
     playParams = null; bvid = null; cid = null; isBangumi = false; ytLastVideoId = null;
     lastApiCode = null; lastApiRaw = null; lastSelectError = null; lastYtRaw = null; pendingYtBody = null;
     videoWired = false;

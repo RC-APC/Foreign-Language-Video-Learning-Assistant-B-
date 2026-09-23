@@ -3,7 +3,7 @@
 > Turn **Bilibili / YouTube** videos into study material: a clickable subtitle list, shadowing, word lookup, vocabulary notebook, spaced-repetition review, and an offline dictionary.
 > All data stays in your browser (`chrome.storage.local`) — **no login, no account, nothing uploaded**.
 
-**Version v0.7.30** · MV3 · Chrome / Edge / Quark / Kiwi · MIT License
+**Version v0.7.34** · MV3 · Chrome / Edge / Quark / Kiwi · MIT License
 
 [**English**](#-english) · [**中文**](#-中文)
 
@@ -23,7 +23,7 @@ The hard part of learning from foreign-language videos isn't *seeing* subtitles 
 - **AI translation track (new)** — when a video has only an original-language CC track and no track in your **native language**, the whole track is translated into your native language and added as a **new "（AI 翻译）" track**. It shows up in the dropdown like a native track: selectable as the primary track, and auto-assigned as the secondary (dual-subtitle) track. The **"译中文"** button (label follows your native language) triggers it manually and stops a run in progress.
 - **Three interchangeable translation engines** — **LLM API** (DeepSeek / SiliconFlow / Zhipu GLM / Moonshot / Qwen / OpenAI…, best quality, bring your own key) → **free Google endpoint** → **MyMemory** (usually reachable from mainland China). Default "auto" relays through them in order: if the LLM gets rate-limited halfway, the free engines fill the remaining lines so the track never has gaps. See the Chinese section「大模型翻译接口怎么填」for how to fill in base URL / model / key.
 - **Live subtitle row** — shows the current line, and every word in it is **clickable**.
-- **Download the line's audio (⬇)** — captures a few seconds of tab audio via `tabCapture` into `line_N.webm`.
+- **Shadow & AI pronunciation scoring (🎤)** — the old per-line ⬇ download is replaced by a 🎤 button. Click it to record your read-aloud of that line via the **microphone** (mic audio only, not the tab), click ■ to stop. The browser's **speech recognition** transcribes what you said, we score **word-level similarity** against the original line, and if you've configured an **LLM** it also returns a **0–100 score with Chinese improvement tips**. Replay buttons let you compare your take with the original and re-record.
 
 ### Lookup & dictionaries
 - **Click a word to look it up, double-click to save it** — works on both the subtitle list and the floating window's live row, sharing one code path.
@@ -131,6 +131,10 @@ npm i jsdom && node test-translate-flow.js && node test-translate-flow.js has-zh
 
 ## Version highlights (selected)
 
+- **v0.7.34** **Fixes & polish** — the 🎤 button now reliably sits at the **end of the subtitle line** (the text item used `flex-basis: auto`, whose max-content width pushed the button onto a new row; now `flex-basis: 0`). The **"Back to subtitle list"** button is now readable (it reused a white-on-transparent style meant for the dark title bar, so it was white-on-white and effectively invisible). With auto-pause on, the live line **no longer jumps to the next cue while paused** (caption boundaries are shared, so at `t == prev.to` the cursor used to slide forward — now the line you just heard is locked until you play or seek, which is what made ▶ play one line while 🎤 targeted the next). The small-window shadowing buttons are now **hideable** via the 🎤 toggle in the title bar (choice is remembered).
+- **v0.7.33** **Inline 🎤 button + shadowing in the small window** — the record button now sits at the **end of the subtitle line** (right after the last word, no longer on its own row). The **windowed/floating mode** also gets a ▶ play + 🎤 record pair under the live line, so you can do read-aloud scoring without the list. Live updates freeze while recording so the result panel isn't wiped mid-take.
+- **v0.7.32** **Instant scoring** — dropped the slow LLM-only scoring; only the local word-level similarity score remains (speech recognition + word matching, score appears the moment you stop). The bottom hint no longer mentions the removed download button, and the diagnostic message now points at the **"Back to subtitle list" button at the top and bottom of the report** (both are always visible) instead of the confusing "←".
+- **v0.7.31** **Sentence shadowing + AI pronunciation scoring** — the per-line ⬇ download button is replaced by a 🎤 record button. Click to record your read-aloud of the line (mic only, no tab audio), click ■ to stop; the browser speech API transcribes your speech, we compute a word-level similarity score, and if an LLM is configured it returns a 0–100 score plus Chinese tips. Replay your take or the original, and re-record. Solves the "can't download audio" issue on some browsers.
 - **v0.7.30** **Split floating-window opacity into two independent controls** — *background* opacity and *text* opacity are now separate, so dimming the background no longer washes out the subtitle text. The notebook's **"online lookup" now also routes through the LLM** (when configured), falling back to the online dictionary, instead of always using online translation.
 - **v0.7.28** Added **fullscreen support**: entering HTML fullscreen re-parents the panel into the fullscreen element (otherwise nothing outside it gets painted), auto-switches to floating mode, and restores everything on exit.
 - **v0.7.27** Added an **LLM translation engine** (any OpenAI-compatible endpoint) with a **Test connection** button, preset providers, and relay fallback to free engines so a partial LLM result still yields a complete track.
@@ -325,6 +329,10 @@ npm i jsdom && node test-translate-flow.js && node test-translate-flow.js has-zh
 
 ## 主要版本历程（节选）
 
+- **v0.7.34** **三处修好**：① 🎤 稳定贴在**字幕行末尾**（文字项原来是 `flex-basis: auto`，它的 max-content 宽度会把按钮挤到下一行，改成 `flex-basis: 0`）；② 诊断页的「返回字幕列表」按钮**能看见了**（它复用了给深色标题栏写的白字半透明白底样式，落在浅色区就白字白底）；③ 开着自动暂停时，**停住后实时行不再滑到下一句**（字幕首尾相接，`t` 恰好等于上一句的 to 时会取到下一句——也就是"点播放是这句、点录音变下一句"的原因；现在会把刚听完的那一句锁住，播放或拖进度条后解锁）。小窗里的跟读按钮也**可以隐藏**了：标题栏的 🎤 开关，选择会被记住。
+- **v0.7.33** **录音键回到段尾 + 小窗也能跟读**：🎤 按钮不再另起一行，改为贴在**该行字幕末尾右侧**（跟着最后一行文字）。**窗口化小窗模式**下实时字幕行下方也补了 ▶ 播放 + 🎤 录音按钮，列表被隐藏时照样能做跟读打分；录音期间冻结实时行刷新，避免结果面板被冲掉。
+- **v0.7.32** **跟读打分秒出**：移除较慢的大模型单独打分，只保留本地逐词相似度（语音识别 + 逐词比对，停止录音立即出分）。底部提示文字不再提及已移除的下载按钮；诊断完成的提示改为明确指向报告**顶部/底部的「返回字幕列表」按钮**（各放一个，滚到哪都能看到），不再用容易误解的「←」。
+- **v0.7.31** **整句跟读 + AI 发音打分**：把每行的「⬇ 下载该行音频」按钮**换成 🎤 录音识别按钮**。点 🎤 用麦克风录下你跟读的那一句（只录人声，不录视频声），点 ■ 停止；浏览器语音识别把你说的转成文字，先做逐词相似度打分，若已配置大模型再返回 0–100 分 + 中文改进建议。可回放「我的录音 / 原句」、再读一次。绕开了部分浏览器「无法下载音频」的限制。
 - **v0.7.30** 浮窗透明度**拆分为两个独立滑块**：「背景透明度」与「文字透明度」分开调，调暗背景不再连累字幕文字变糊；生词本「🔍 联网查」**在没有释义时也会走大模型**（已配置大模型 API 时优先，命中不到再退回在线词典），不再只走在线翻译。
 - **v0.7.28** 新增**全屏浮窗**：进 HTML 全屏时把面板临时挂到全屏元素里（否则会被整棵子树裁掉看不见），自动切浮窗模式，退出全屏自动还原挂载点与原来的窗口化状态。
 - **v0.7.27** 新增**大模型翻译引擎**（任意 OpenAI 兼容接口）：预设厂商 + 一键**测试连接** + 地址 `/v1` 容错；多引擎接力——大模型只译出一部分时，剩余行由免费接口自动补齐，轨道不缺行。

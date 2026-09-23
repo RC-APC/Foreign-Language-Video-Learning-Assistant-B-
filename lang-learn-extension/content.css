@@ -86,6 +86,10 @@
 #ll-panel.ll-windowed #ll-live { display: block; }
 /* 窗口化浮窗显式保留「暂停」按钮，自动暂停跟读照常可用 */
 #ll-panel.ll-windowed #ll-pause { display: inline-block !important; }
+/* 「小窗跟读按钮」开关：只在窗口化态出现；关掉时按钮变暗，实时行恢复成干净的一行字幕 */
+#ll-panel #ll-shadow { display: none; }
+#ll-panel.ll-windowed #ll-shadow { display: inline-block !important; }
+#ll-shadow.ll-off { background: rgba(255, 255, 255, 0.06); opacity: 0.55; }
 /* 全屏浮窗：面板被临时挂进全屏容器后才能显示，这里用 !important 顶住播放器 CSS
    （全屏容器经常带自己的 reset / filter / transform，会把定位和层级带跑） */
 #ll-panel.ll-in-fs {
@@ -174,7 +178,8 @@
 
 .ll-cue {
   display: flex;
-  align-items: flex-start;
+  flex-wrap: wrap;
+  align-items: flex-end;
   gap: 6px;
   padding: 6px 4px;
   border-radius: 8px;
@@ -187,7 +192,7 @@
 .ll-cue:hover { background: #f5f6f7; }
 .ll-cue.ll-cur:hover { background: #e6ebff; }
 
-.ll-play, .ll-dl {
+.ll-play, .ll-dl, .ll-rec {
   flex: 0 0 auto;
   border: none;
   background: #f1f3f5;
@@ -199,11 +204,42 @@
   font-size: 12px;
   line-height: 1;
 }
-.ll-play:hover, .ll-dl:hover { background: #dbe4ff; }
+.ll-play:hover, .ll-dl:hover, .ll-rec:hover { background: #dbe4ff; }
 .ll-dl { color: #e8590c; }
+.ll-rec { color: #e8590c; }
+.ll-rec:hover { background: #ffe3cc; }
+.ll-rec.recording { background: #ff6b6b; color: #fff; animation: ll-pulse 1s infinite; }
+@keyframes ll-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .55; } }
+.ll-rec-result {
+  flex-basis: 100%;
+  margin-top: 4px;
+  padding: 6px 8px;
+  background: #f8f9fa;
+  border: 1px solid #e9ecef;
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.5;
+  display: none;
+}
+.ll-rec-result.show { display: block; }
+.ll-rec-result .ll-rec-recog { color: #495057; }
+.ll-rec-result .ll-rec-base { color: #adb5bd; font-size: 11px; }
+.ll-rec-result .ll-rec-score { font-weight: 700; font-size: 14px; }
+.ll-rec-result .sc-good { color: #2f9e44; }
+.ll-rec-result .sc-ok { color: #f08c00; }
+.ll-rec-result .sc-bad { color: #e03131; }
+.ll-rec-result .ll-rec-actions { margin-top: 4px; }
+.ll-rec-result .ll-rec-actions button {
+  border: none; background: #e7f5ff; color: #1971c2; border-radius: 5px;
+  padding: 2px 8px; margin-right: 6px; cursor: pointer; font-size: 11px;
+}
 
 .ll-text {
-  flex: 1 1 auto;
+  /* flex-basis 必须是 0（不是 auto）：basis:auto 时该子项的"假想主轴尺寸"= max-content，
+     长句会撑得比容器还宽，flex-wrap 就先换行，把行尾的 🎤 甩到下一行（截图里"有的在右侧有的在底部"就是这个）。
+     basis:0 让它不参与换行判定，再由 flex-grow 撑满剩余空间，文字在内部换行、按钮稳稳留在行尾。 */
+  flex: 1 1 0%;
+  min-width: 0;
   line-height: 1.7;
   font-size: 14px;
   word-break: break-word;
@@ -251,6 +287,11 @@
 #ll-panel.ll-windowed #ll-live .ll-word { padding: 0 2px; }
 #ll-live .ll-live-main { display: block; }
 #ll-live .ll-live-sub { display: block; margin-top: 3px; font-size: 12px; font-weight: 400; color: #868e96; line-height: 1.4; }
+/* 小窗模式：实时行下方补的 ▶ / 🎤 跟读按钮（列表隐藏时也能录音评分） */
+#ll-live .ll-live-tools { display: flex; gap: 6px; margin-top: 6px; }
+#ll-live .ll-live-tools .ll-play,
+#ll-live .ll-live-tools .ll-rec { width: 28px; height: 28px; font-size: 13px; }
+#ll-live .ll-rec-result { margin-top: 6px; font-weight: 400; }
 
 /* 对照（双语）轨道下拉框：与主轨道并列，宽度自适应 */
 #ll-track2 {
@@ -264,7 +305,7 @@
   color: #1f2329;
 }
 
-#ll-diag-toolbar {
+.ll-diag-toolbar {
   display: flex;
   gap: 6px;
   padding: 6px 2px 8px;
@@ -274,6 +315,17 @@
   z-index: 2;
   border-bottom: 1px solid #f0f0f0;
 }
+.ll-diag-toolbar.ll-diag-bottom { border-bottom: none; border-top: 1px solid #f0f0f0; margin-top: 8px; }
+.ll-diag-toolbar .ll-btn {
+  /* .ll-btn 的默认样式是给深色标题栏用的（白字 + 半透明白底），
+     放在浅色的诊断区就是白字白底看不见 → 这里整套覆盖成浅底深字。 */
+  background: #e9ecef;
+  color: #1f2329;
+  border: 1px solid #d0d7de;
+  padding: 4px 10px;
+  font-weight: 600;
+}
+.ll-diag-toolbar .ll-btn:hover { background: #dbe4ff; color: #4263eb; border-color: #a5b4fc; }
 
 #ll-diag-report {
   margin: 0;
