@@ -33,6 +33,12 @@
     .def { font-size: 13px; color: #495057; margin-top: 5px; line-height: 1.55; word-break: break-word; }
     .def.hit { color: #1f2329; }
     .def.miss { color: #adb5bd; font-style: italic; }
+    /* 大模型释义卡片（与插件面板同源的结构化返回：词性 / 释义 / 说明 / 例句） */
+    .def.llm { color: #1f2329; }
+    .def.llm .ll-pos { color: #2f9e44; font-size: 11px; margin-top: 4px; }
+    .def.llm .ll-def { margin-bottom: 2px; }
+    .def.llm .ll-def-note { color: #1971c2; margin-top: 4px; font-size: 12px; line-height: 1.45; }
+    .def.llm .ll-def-ex { color: #e8590c; margin-top: 4px; font-size: 12px; line-height: 1.45; font-style: italic; }
     textarea.note-edit {
       width: 100%; margin-top: 6px; font-size: 13px; min-height: 42px; resize: vertical;
       border: 1px solid #ced4da; border-radius: 6px; padding: 6px; font-family: inherit;

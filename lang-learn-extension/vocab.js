@@ -107,7 +107,8 @@
     });
   }
 
-  // 联网查该词，结果只展示（不改生词本）
+  // 联网查该词：优先用大模型（带语境的释义卡片，需已配置 LLM API），失败回退在线词典。
+  // 没有本地释义时，用户点「🔍 联网查」希望也能走大模型，而不是只走在线翻译。
   function lookupInList(i) {
     const v = vocab[i];
     const list = $('list');
@@ -115,17 +116,52 @@
     const defs = list ? list.querySelectorAll('.def') : [];
     const el = defs[i];
     if (el) { el.className = 'def'; el.textContent = '联网查词中…'; }
-    chrome.runtime.sendMessage({ type: 'lookup', word: v.word }, (resp) => {
-      if (!el) return;
-      if (resp && resp.ok && resp.meanings && resp.meanings.length) {
-        el.className = 'def hit';
-        el.textContent = resp.meanings.slice(0, 3).map((m) => (m.pos ? '【' + m.pos + '】' : '') + m.def).join('；') +
-          (resp.source ? '　（' + resp.source + '）' : '');
-      } else {
-        el.className = 'def miss';
-        el.textContent = (resp && resp.error) ? ('⚠️ ' + resp.error) : '（未查到释义）';
-      }
+    // 用户开了大模型（设置里勾了「用大模型 API 翻译」）→ 优先大模型；否则先用在线词典，命中不到再试大模型兜底
+    chrome.storage.local.get({ llm: {} }, (lr) => {
+      const llmOn = !!(lr.llm && lr.llm.on);
+      chrome.storage.sync.get({ translateTarget: 'zh-CN', dictSource: 'api' }, (cfg) => {
+        const tl = cfg.translateTarget || 'zh-CN';
+        const doLlm = () => new Promise((res) => {
+          chrome.runtime.sendMessage({ type: 'dictLlm', word: v.word, tl: tl }, (r) => res(r && r.ok ? r : null));
+        });
+        const doOnline = () => new Promise((res) => {
+          chrome.runtime.sendMessage({ type: 'lookup', word: v.word }, (r) =>
+            res((r && r.ok && r.meanings && r.meanings.length) ? r : null));
+        });
+        (async () => {
+          let resp = null;
+          if (llmOn) resp = await doLlm();
+          if (!resp) resp = await doOnline();
+          if (!resp) resp = await doLlm();   // 在线没命中，再用大模型兜底
+          renderLookup(el, resp, v.word);
+        })();
+      });
     });
+  }
+
+  // 把查词结果渲染到指定元素，兼容「大模型卡片(html)」与「在线词典(meanings)」两种返回
+  function renderLookup(el, resp, word) {
+    if (!el) return;
+    if (!resp) {
+      el.className = 'def miss';
+      el.textContent = '（未查到释义，可点「✎ 改词」试词典里的原形，或点「注释」手动补充）';
+      return;
+    }
+    if (resp.html) {
+      el.className = 'def hit llm';
+      let html = resp.html;
+      if (resp.word && resp.word !== word) {
+        html += '<div class="ll-def-note">（' + escapeHtml(word) + ' → ' + escapeHtml(resp.word) + '）</div>';
+      }
+      el.innerHTML = html;
+    } else if (resp.meanings && resp.meanings.length) {
+      el.className = 'def hit';
+      el.textContent = resp.meanings.slice(0, 3).map((m) => (m.pos ? '【' + m.pos + '】' : '') + m.def).join('；') +
+        (resp.source ? '　（' + resp.source + '）' : '');
+    } else {
+      el.className = 'def miss';
+      el.textContent = '（未查到释义）';
+    }
   }
 
   // 改词：把变形改成词典里的原形（written → write），便于对上释义

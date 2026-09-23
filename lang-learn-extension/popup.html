@@ -17,6 +17,7 @@
     <select id="dictSource">
       <option value="api">在线词典（dictionaryapi.dev，较慢）</option>
       <option value="eudic">本地欧路词典（唤起欧路查词，秒开）</option>
+      <option value="llm">大模型 AI 翻译（带语境，需配置 API，质量最好）</option>
     </select>
     <div id="eudicBox" class="eudicbox">
       <select id="eudicAction" title="唤起欧路词典的窗口类型">
@@ -29,6 +30,82 @@
         首次会弹「要打开 欧路词典 吗？」——勾选<b>始终允许</b>后即秒开。<br>
         若没反应：请确认<b>已安装欧路词典</b>（Win 版 ≥ 14.0）。
       </div>
+    </div>
+
+    <hr>
+
+    <h2>AI 中文字幕</h2>
+    <label class="row"><input type="checkbox" id="autoTranslate"> 没有中文轨道时自动翻译出一条</label>
+    <select id="trEngine" title="翻译引擎">
+      <option value="auto">自动（大模型 → Google → MyMemory）</option>
+      <option value="llm">仅大模型 API</option>
+      <option value="google">仅 Google 免费翻译</option>
+      <option value="mymemory">仅 MyMemory（国内通常可达）</option>
+    </select>
+    <select id="translateTarget" title="母语 / 译文语言：字幕翻译成中文的目标语言，面板界面语言也跟随它">
+      <option value="zh-CN">母语：简体中文</option>
+      <option value="zh-TW">母语：繁體中文</option>
+      <option value="en">母语：English</option>
+      <option value="ja">母语：日本語</option>
+      <option value="ko">母语：한국어</option>
+      <option value="fr">母语：Français</option>
+      <option value="de">母语：Deutsch</option>
+      <option value="es">母语：Español</option>
+      <option value="ru">母语：Русский</option>
+      <option value="pt">母语：Português</option>
+      <option value="it">母语：Italiano</option>
+      <option value="th">母语：ไทย</option>
+      <option value="vi">母语：Tiếng Việt</option>
+      <option value="ar">母语：العربية</option>
+      <option value="id">母语：Indonesia</option>
+      <option value="hi">母语：हिन्दी</option>
+    </select>
+    <div class="hint show">
+      字幕加载后自动生成「中文（AI 翻译）」轨道并挂到对照位；也可点面板上的「译中文」手动触发。<br>
+      译文会缓存，同一视频同一引擎不会重复翻译。
+    </div>
+
+    <label class="row"><input type="checkbox" id="llmOn"> 用大模型 API 翻译（质量最好）</label>
+    <div id="llmBox">
+      <select id="llmPreset" title="选一家会自动填地址和默认模型，可再手改">
+        <option value="deepseek">DeepSeek（便宜，量大首选）</option>
+        <option value="siliconflow">硅基流动 · 免费翻译模型</option>
+        <option value="siliconflow2">硅基流动 · 其他模型</option>
+        <option value="zhipu">智谱 GLM · 免费 Flash</option>
+        <option value="moonshot">Moonshot / Kimi</option>
+        <option value="qwen">阿里云百炼 · 通义千问</option>
+        <option value="volc">火山方舟 · 豆包</option>
+        <option value="openai">OpenAI</option>
+        <option value="groq">Groq</option>
+        <option value="ollama">本地 Ollama</option>
+        <option value="custom">自定义 / 中转站</option>
+      </select>
+      <input id="llmBase" type="text" placeholder="API 地址 Base URL" spellcheck="false">
+      <input id="llmModel" type="text" placeholder="模型名（model）" spellcheck="false">
+      <input id="llmKey" type="password" placeholder="API Key" spellcheck="false">
+      <button id="llmTest" class="clear" style="color:#4263eb;border-color:#a5b4fc">测试连接</button>
+      <div id="llmResult" class="hint"></div>
+      <div class="hint show" id="llmHint">
+        Key 只存在本机（<code>local</code>），不会同步到浏览器账号。<br>
+        模型名以各家控制台为准（<b>会变</b>）：DeepSeek 现为 <code>deepseek-flash</code>，旧的 <code>deepseek-chat</code> 已于 2026-07 停用。<br>
+        换模拟器 / 自建中转时，填完点「测试连接」，若域名未授权会弹一次授权请求，允许即可。
+      </div>
+    </div>
+
+    <hr>
+
+    <h2>浮窗与外观</h2>
+    <label class="row">浮窗背景透明度：<b id="opVal">85%</b></label>
+    <input type="range" id="panelOpacity" min="10" max="100" step="5" value="85" style="width:100%">
+    <div class="hint show">
+      全屏 / 窗口化浮窗的<b>背景</b>透明度，调低可看清背后视频（10%–100%）。<br>
+      侧边固定面板保持不透明，不影响阅读。
+    </div>
+    <label class="row">浮窗文字透明度：<b id="txVal">100%</b></label>
+    <input type="range" id="textOpacity" min="30" max="100" step="5" value="100" style="width:100%">
+    <div class="hint show">
+      只调<b>文字</b>透明度，背景不受影响，默认 100%（全清）。<br>
+      想让字幕半透明、背景更透，就分别拉这两个滑块——二者相互独立。
     </div>
 
     <hr>

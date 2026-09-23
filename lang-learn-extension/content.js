@@ -36,6 +36,21 @@
   let eudicAction = 'lp-dict'; // 唤起欧路词典的窗口类型：lp-dict 迷你 / cap-dict 取词小窗 / dict 主窗口
   let eudicScheme = 'eudic';   // 词典应用协议：eudic 欧路 / eudic-fr 法语助手 / eudic-de 德语助手 / eudic-es 西语助手
 
+  // ---------- AI 中文译文轨道 ----------
+  // 只有原文 CC、没有中文轨道时，把当前轨道整批翻译成中文，
+  // 并往 subtitleTracks 里塞一条「虚拟轨道」（正文不从网络下载，直接取内存里的译文）。
+  let autoTranslate = true;    // 自动翻译开关
+  let trEngine = 'auto';       // 翻译引擎：auto（大模型→Google→MyMemory 接力）/ llm / google / mymemory
+  let translateTarget = 'zh-CN'; // 译文语种（= 母语；面板界面语言也跟随它）
+  let uiLang = 'zh-CN';        // 面板界面语言（默认跟随母语，i18n 见下方 I18N）
+  let panelOpacity = 0.85;     // 全屏 / 窗口化浮窗的「背景」透明度（0.05–1.0），侧边面板不受影响
+  let textOpacity = 1.0;       // 浮窗「文字」透明度（0–1），与背景独立，默认 1（全清）
+  let trRunning = false;       // 是否正在翻译
+  let trAbort = false;         // 用户点了「停止」
+  let trGen = 0;               // 视频切换代号：防止旧视频的翻译结果串台到新视频
+  let trStore = {};            // srcIdx -> { key, tl, cues:[] }（译文正文，供虚拟轨道读取）
+  let lastTrInfo = null;       // 上次翻译结果（引擎 / 错误），供诊断显示
+
   // 站点适配：bilibili / youtube / unsupported
   let currentSite = 'bilibili';
   let ytLastVideoId = null;     // 已加载字幕的 YouTube 视频 id，避免 SPA 重复拉取
@@ -53,7 +68,7 @@
     return new Promise((resolve) => {
       // 关键：无论回调里发生什么都必须 resolve()，否则 init() 会永久挂起 → 面板不出现。
       try {
-        chrome.storage.sync.get(['enabled', 'autoPause', 'dictSource', 'eudicAction'], (r) => {
+        chrome.storage.sync.get(['enabled', 'autoPause', 'dictSource', 'eudicAction', 'autoTranslate', 'trEngine', 'translateTarget', 'panelOpacity', 'textOpacity'], (r) => {
           try {
             settings.enabled = r.enabled !== false;
             settings.autoPause = !!r.autoPause;
@@ -61,6 +76,12 @@
             settings.eudicAction = r.eudicAction || 'lp-dict';
             dictSource = settings.dictSource;
             eudicAction = settings.eudicAction;
+            autoTranslate = r.autoTranslate !== false;
+            trEngine = r.trEngine || 'auto';
+            translateTarget = r.translateTarget || 'zh-CN';
+            uiLang = I18N[translateTarget] ? translateTarget : 'zh-CN';   // 界面语言跟随母语（仅内置四语，其余回退中文）
+            panelOpacity = (typeof r.panelOpacity === 'number' && r.panelOpacity > 0) ? r.panelOpacity : 0.85;
+            textOpacity = (typeof r.textOpacity === 'number' && r.textOpacity >= 0) ? r.textOpacity : 1;
           } catch (e) { log('应用设置出错（用默认值继续）', e); }
           resolve();
         });
@@ -69,6 +90,91 @@
   }
 
   // 注：设置的即时生效统一由 init() 里的 syncSettings() 处理（onChanged + 轮询兜底）。
+
+  // ---------- 界面多语言（i18n） ----------
+  // 面板界面语言跟随「母语 / 译文语言」。目前内置 中文 / English / 日本語 / 한국어 四套；
+  // 其它母语（法/德/西…）界面仍显示中文（留作后续扩展），译文语言本身不受限。
+  const I18N = {
+    'zh-CN': {
+      panelTitle: '📚 外语学习', vocabBtn: '生词(0)',
+      pauseOn: '暂停：开', pauseOff: '暂停：关', pauseTitle: '开启后每行字幕自动暂停',
+      popTitle: '窗口化（拖动标题栏可移动面板）', popTitleOn: '恢复固定到右侧',
+      minTitle: '最小化面板（收成小条）', expandTitle: '展开面板',
+      trackLabel: '字幕轨道', trackLoading: '加载中…', trackNone: '（无可选 CC 轨道）',
+      track2Title: '对照轨道（双语同时显示，窗口化浮窗里叠两行）', track2None: '对照：无',
+      reloadTitle: '重新获取字幕列表',
+      trTitle: '把当前字幕轨道翻译成中文，生成一条新的「中文（AI 翻译）」轨道', trBtn: '译中文',
+      hint: '点 ▶ 跟读该行 · 点单词查释义 · 双击单词存生词 · 点 ⬇ 下载该行音频',
+      vocabHead: '共 {n} 词 · 待复习 {d}', vocabEmpty: '还没有保存单词。在字幕里双击单词即可加入。',
+      dictLoading: '查询中…', dictNotFound: '未找到释义。内置词库主要收录英文；其它语种请在设置中配置「整句翻译」。',
+      dictTip: '双击单词可存入生词本', dictTipLlm: '双击单词可存入生词本（自动带译文注释）',
+      saved: '✓ 已存入生词本：', inVocab: '已在生词本：',
+      fsToast: '全屏中：已切成浮窗，拖标题栏可移动', notSupported: '当前站点（{host}）暂不支持自动字幕；生词本与复习功能仍可用。',
+      llmUncfg: '未配置大模型：请到插件设置打开「用大模型 API 翻译」并填好 Key', llmFail: '大模型查词失败'
+    },
+    'en': {
+      panelTitle: '📚 Language Learning', vocabBtn: 'Words(0)',
+      pauseOn: 'Pause: On', pauseOff: 'Pause: Off', pauseTitle: 'Auto-pause on each subtitle line when on',
+      popTitle: 'Pop out (drag the title bar to move)', popTitleOn: 'Dock back to the right',
+      minTitle: 'Minimize panel (to a small bar)', expandTitle: 'Expand panel',
+      trackLabel: 'Subtitle track', trackLoading: 'Loading…', trackNone: '(no CC track)',
+      track2Title: 'Reference track (dual subtitles, stacked in popup)', track2None: 'Ref: none',
+      reloadTitle: 'Reload subtitle list',
+      trTitle: 'Translate current track into your language, add a new "AI translation" track', trBtn: 'Translate',
+      hint: 'Click ▶ to shadow a line · click a word to look up · double-click to save · click ⬇ to download audio',
+      vocabHead: '{n} words · {d} due', vocabEmpty: 'No saved words yet. Double-click a word in the subtitles to add.',
+      dictLoading: 'Looking up…', dictNotFound: 'No definition found. The built-in dictionary mainly covers English; for other languages set up "sentence translation" in settings.',
+      dictTip: 'Double-click a word to save it', dictTipLlm: 'Double-click a word to save it (with translation note)',
+      saved: '✓ Saved: ', inVocab: 'Already in wordbook: ',
+      fsToast: 'Fullscreen: switched to floating window, drag the title bar to move',
+      notSupported: 'This site ({host}) is not supported for auto subtitles; wordbook & review still work.',
+      llmUncfg: 'LLM not configured: enable "Use LLM API" in settings and fill in URL/model/Key', llmFail: 'LLM lookup failed'
+    },
+    'ja': {
+      panelTitle: '📚 語学学習', vocabBtn: '単語(0)',
+      pauseOn: '一時停止：オン', pauseOff: '一時停止：オフ', pauseTitle: 'オンのとき各行字幕で自動一時停止',
+      popTitle: 'ポップアウト（タイトルバーをドラッグで移動）', popTitleOn: '右側に戻す',
+      minTitle: 'パネルを最小化（小さいバーに）', expandTitle: 'パネルを展開',
+      trackLabel: '字幕トラック', trackLoading: '読み込み中…', trackNone: '（CC トラックなし）',
+      track2Title: '参照トラック（二か国語表示、ポップアップで重ねる）', track2None: '参照：なし',
+      reloadTitle: '字幕リストを再取得',
+      trTitle: '現在のトラックを母国語に翻訳し、「AI 翻訳」トラックを追加', trBtn: '翻訳',
+      hint: '▶ でリピート · 単語をクリックで意味 · ダブルクリックで保存 · ⬇ で音声保存',
+      vocabHead: '全 {n} 語 · 復習待ち {d}', vocabEmpty: '保存された単語はまだありません。字幕の単語をダブルクリックで追加。',
+      dictLoading: '検索中…', dictNotFound: '意味が見つかりません。内蔵辞書は主に英語です。他言語は設定で「文単位翻訳」を使ってください。',
+      dictTip: '単語をダブルクリックで保存', dictTipLlm: '単語をダブルクリックで保存（訳をメモに）',
+      saved: '✓ 保存しました：', inVocab: '既に単語帳にあります：',
+      fsToast: '全画面：フローティングウィンドウに切替、タイトルバーをドラッグで移動',
+      notSupported: 'このサイト（{host}）は字幕自動取得に対応していません。単語帳と復習は使えます。',
+      llmUncfg: 'LLM 未設定：設定で「LLM API を使う」をオンにし、URL/モデル/Key を入力してください', llmFail: 'LLM 検索失敗'
+    },
+    'ko': {
+      panelTitle: '📚 어학 학습', vocabBtn: '단어(0)',
+      pauseOn: '일시정지: 켜짐', pauseOff: '일시정지: 꺼짐', pauseTitle: '켜면 자막 한 줄마다 자동 일시정지',
+      popTitle: '팝아웃(제목 표시줄을 드래그해 이동)', popTitleOn: '오른쪽에 고정',
+      minTitle: '패널 최소화(작은 줄로)', expandTitle: '패널 펼치기',
+      trackLabel: '자막 트랙', trackLoading: '불러오는 중…', trackNone: '(CC 트랙 없음)',
+      track2Title: '대조 트랙(두 언어 동시 표시, 팝업에서 겹침)', track2None: '대조: 없음',
+      reloadTitle: '자막 목록 다시 가져오기',
+      trTitle: '현재 트랙을 모국어로 번역해 "AI 번역" 트랙 추가', trBtn: '번역',
+      hint: '▶ 로 따라읽기 · 단어 클릭해 뜻 보기 · 더블클릭해 저장 · ⬇ 로 음성 저장',
+      vocabHead: '총 {n} 어 · 복습 {d}', vocabEmpty: '저장된 단어가 없습니다. 자막에서 단어를 더블클릭해 추가하세요.',
+      dictLoading: '찾는 중…', dictNotFound: '뜻을 찾지 못했습니다. 내장 사전은 주로 영어입니다. 다른 언어는 설정의 "문장 번역"을 쓰세요.',
+      dictTip: '단어를 더블클릭해 저장', dictTipLlm: '단어를 더블클릭해 저장(번역 메모 포함)',
+      saved: '✓ 저장됨: ', inVocab: '이미 단어장에 있음: ',
+      fsToast: '전체화면: 플로팅 창으로 전환, 제목 표시줄 드래그로 이동',
+      notSupported: '이 사이트({host})는 자막 자동 가져오기를 지원하지 않습니다. 단어장과 복습은 사용 가능.',
+      llmUncfg: 'LLM 미설정: 설정에서 "LLM API 사용"을 켜고 URL/모델/Key 를 입력하세요', llmFail: 'LLM 검색 실패'
+    }
+  };
+  function t(key, vars) {
+    const map = I18N[uiLang] || I18N['zh-CN'];
+    let s = (map && map[key] != null) ? map[key] : (I18N['zh-CN'][key] != null ? I18N['zh-CN'][key] : key);
+    if (vars) for (const k in vars) s = String(s).replace('{' + k + '}', vars[k]);
+    return s;
+  }
+  // 缓存最近一次大模型释义（word → {def, html}），双击存生词时直接复用，避免重复请求
+  const llmDefCache = {};
 
   function getVideo() { return document.querySelector('video'); }
 
@@ -255,6 +361,11 @@
   }
 
   async function fetchSubtitleData(track) {
+    // 虚拟轨道（AI 中文译文）：正文就在内存里，不走网络
+    if (track && track._virtual) {
+      const rec = trStore[track._src];
+      return (rec && rec.cues ? rec.cues : []).map((c) => ({ from: c.from, to: c.to, content: c.text }));
+    }
     if (track && track._fmt === 'yt') return fetchYtData(track.url);
     // B 站字幕正文在 aisubtitle.hdslb.com / subtitle.bilibili.com 等跨域 CDN，
     // URL 已带 auth_key 鉴权，无需 cookie；带 credentials 反而会因 CORS 被拦。
@@ -381,41 +492,94 @@
     panel.id = 'll-panel';
     panel.innerHTML = `
       <div id="ll-bar">
-        <span class="ll-title">📚 外语学习</span>
-        <button id="ll-vocab-btn" class="ll-btn" title="查看/管理生词本">生词(0)</button>
-        <button id="ll-pause" class="ll-btn" title="开启后每行字幕自动暂停">暂停：关</button>
-        <button id="ll-pop" class="ll-btn" title="窗口化（拖动标题栏可移动面板）">▢</button>
-        <button id="ll-min" class="ll-btn" title="最小化面板（收成小条）">－</button>
+        <span class="ll-title">${t('panelTitle')}</span>
+        <button id="ll-vocab-btn" class="ll-btn" title="查看/管理生词本">${t('vocabBtn')}</button>
+        <button id="ll-pause" class="ll-btn" title="${t('pauseTitle')}">${t('pauseOff')}</button>
+        <button id="ll-pop" class="ll-btn" title="${t('popTitle')}">▢</button>
+        <button id="ll-min" class="ll-btn" title="${t('minTitle')}">－</button>
       </div>
       <div id="ll-subbar">
-        <span class="ll-sub-label">字幕轨道</span>
-        <select id="ll-track"><option value="-1">加载中…</option></select>
-        <select id="ll-track2" title="对照轨道（双语同时显示，窗口化浮窗里叠两行）"><option value="-1">对照：无</option></select>
-        <button id="ll-reload" class="ll-btn" title="重新获取字幕列表">⟳</button>
+        <span class="ll-sub-label">${t('trackLabel')}</span>
+        <select id="ll-track"><option value="-1">${t('trackLoading')}</option></select>
+        <select id="ll-track2" title="${t('track2Title')}"><option value="-1">${t('track2None')}</option></select>
+        <button id="ll-reload" class="ll-btn" title="${t('reloadTitle')}">⟳</button>
+        <button id="ll-tr" class="ll-btn" title="${t('trTitle')}">${t('trBtn')}</button>
       </div>
       <div id="ll-vocab" style="display:none;"></div>
       <div id="ll-review" style="display:none;"></div>
       <div id="ll-list"></div>
       <div id="ll-live"></div>
       <div id="ll-status"></div>
-      <div id="ll-hint">点 ▶ 跟读该行 · 点单词查释义 · 双击单词存生词 · 点 ⬇ 下载该行音频</div>
+      <div id="ll-hint">${t('hint')}</div>
       <div id="ll-toast"></div>`;
     document.body.appendChild(panel);
+    applyPanelOpacity();
+
+    // 折叠（最小化）开关：全屏自动展开时要复用这段，所以抽成函数
+    function setCollapsed(on) {
+      if (panel.classList.contains('ll-collapsed') === on) return;
+      panel.classList.toggle('ll-collapsed', on);
+      const btn = document.getElementById('ll-min');
+      if (btn) {
+        btn.textContent = on ? '＋' : '－';
+        btn.title = on ? t('expandTitle') : t('minTitle');
+      }
+    }
+    // 窗口化（可拖动浮窗）开关：全屏会自动切成这个模式
+    function setWindowed(on) {
+      if (panel.classList.contains('ll-windowed') === on) return false;
+      panel.classList.toggle('ll-windowed', on);
+      if (on) {
+        const r = panel.getBoundingClientRect();
+        panel.style.left = Math.round(r.left) + 'px';
+        panel.style.top = Math.round(r.top) + 'px';
+        panel.style.right = 'auto';
+        panel.style.bottom = 'auto';
+      } else {
+        panel.style.left = '';
+        panel.style.top = '';
+        panel.style.right = '';
+        panel.style.bottom = '';
+      }
+      const b = document.getElementById('ll-pop');
+      if (b) {
+        b.textContent = on ? '📌' : '▢';
+        b.title = on ? t('popTitleOn') : t('popTitle');
+      }
+      applyPanelOpacity();
+      return true;
+    }
+    // 全屏 / 窗口化浮窗：背景与文字分别独立控制透明度。
+    // 旧逻辑 panel.style.opacity 会把整块面板（含文字）一起调暗，导致字幕看不清；
+    // 现改为两个 CSS 变量：--ll-bg-op（仅背景）与 --ll-tx-op（仅文字），由 CSS 分别消费。
+    function applyPanelOpacity() {
+      if (!panel) return;
+      const floaty = panel.classList.contains('ll-windowed') || panel.classList.contains('ll-in-fs');
+      if (floaty) {
+        const bg = (typeof panelOpacity === 'number' && panelOpacity > 0) ? Math.min(1, Math.max(0.05, panelOpacity)) : 0.85;
+        const tx = (typeof textOpacity === 'number' && textOpacity >= 0) ? Math.min(1, Math.max(0.05, textOpacity)) : 1;
+        panel.style.setProperty('--ll-bg-op', String(bg));
+        panel.style.setProperty('--ll-tx-op', String(tx));
+        panel.style.opacity = '';
+      } else {
+        panel.style.removeProperty('--ll-bg-op');
+        panel.style.removeProperty('--ll-tx-op');
+        panel.style.opacity = '';
+      }
+    }
 
     document.getElementById('ll-min').onclick = () => {
       // 真正的「最小化」：整块面板收成右上角一条小标题胶囊，再点展开。
-      const collapsed = panel.classList.toggle('ll-collapsed');
-      const btn = document.getElementById('ll-min');
-      btn.textContent = collapsed ? '＋' : '－';
-      btn.title = collapsed ? '展开面板' : '最小化面板（收成小条）';
+      setCollapsed(!panel.classList.contains('ll-collapsed'));
     };
     document.getElementById('ll-pause').onclick = (e) => {
       settings.autoPause = !settings.autoPause;
       chrome.storage.sync.set({ autoPause: settings.autoPause });
-      e.target.textContent = '暂停：' + (settings.autoPause ? '开' : '关');
+      e.target.textContent = (settings.autoPause ? t('pauseOn') : t('pauseOff'));
     };
     if (settings.autoPause) document.getElementById('ll-pause').textContent = '暂停：开';
     document.getElementById('ll-reload').onclick = () => { loadSubtitles(); };
+    document.getElementById('ll-tr').onclick = onTranslateClick;
     document.getElementById('ll-track').onchange = (e) => {
       const idx = Number(e.target.value);
       if (idx >= 0) selectTrack(idx);
@@ -442,26 +606,7 @@
 
     // 「窗口化」：脱离右侧固定，转为可拖动浮窗；再点恢复钉在右侧。
     const popBtn = document.getElementById('ll-pop');
-    popBtn.onclick = () => {
-      const on = panel.classList.toggle('ll-windowed');
-      if (on) {
-        const r = panel.getBoundingClientRect();
-        panel.style.left = Math.round(r.left) + 'px';
-        panel.style.top = Math.round(r.top) + 'px';
-        panel.style.right = 'auto';
-        panel.style.bottom = 'auto';
-        popBtn.textContent = '📌';
-        popBtn.title = '恢复固定到右侧';
-      } else {
-        panel.classList.remove('ll-windowed');
-        panel.style.left = '';
-        panel.style.top = '';
-        panel.style.right = '';
-        panel.style.bottom = '';
-        popBtn.textContent = '▢';
-        popBtn.title = '窗口化（拖动标题栏可移动面板）';
-      }
-    };
+    popBtn.onclick = () => { setWindowed(!panel.classList.contains('ll-windowed')); };
     // 标题栏拖拽（仅窗口化态生效；点按钮不触发拖拽）。同时支持鼠标与触屏。
     let dragState = null;
     const onDragMove = (e) => {
@@ -509,13 +654,114 @@
     barEl.addEventListener('touchstart', onBarDragStart, { passive: false });
     // 折叠成小条后，点标题也能展开（免去必须精准点到「＋」按钮）
     const titleEl = panel.querySelector('#ll-bar .ll-title');
-    if (titleEl) titleEl.onclick = () => {
-      if (panel.classList.contains('ll-collapsed')) {
-        panel.classList.remove('ll-collapsed');
-        const btn = document.getElementById('ll-min');
-        if (btn) { btn.textContent = '－'; btn.title = '最小化面板（收成小条）'; }
+    if (titleEl) titleEl.onclick = () => { setCollapsed(false); };
+
+    // ---------- 全屏浮窗 ----------
+    // 原理：进 HTML 全屏后浏览器只绘制 document.fullscreenElement 及其后代，
+    // 原本挂在 body 上的面板会被整棵子树裁掉（不见人）。所以进全屏就把面板
+    // 临时改挂到那个全屏容器里，退出全屏再搬回 body 原来的位置。
+    let fsSaved = null;      // { parent, next, left, top, right, bottom, windowed, collapsed }
+    let fsHosted = null;     // 当前实际挂载的全屏容器
+    let fsTried = false;     // <video> 全屏补救（换容器重请求）只试一次，避免反复退出全屏
+
+    function currentFsEl() {
+      return document.fullscreenElement || document.webkitFullscreenElement || null;
+    }
+    // <video> 自己全屏时，塞给它任何子元素都算 fallback content，浏览器一律不渲染，
+    // 所以这种时候只能先把全屏对象换成上层容器。
+    function fsHostOf(el) {
+      if (el && String(el.tagName || '').toLowerCase() === 'video') return null;
+      return el;
+    }
+    function fsClamp(x, y) {
+      const r = panel.getBoundingClientRect();
+      const maxX = Math.max(0, window.innerWidth - r.width);
+      const maxY = Math.max(0, window.innerHeight - r.height);
+      panel.style.left = Math.round(Math.min(Math.max(0, x), maxX)) + 'px';
+      panel.style.top = Math.round(Math.min(Math.max(0, y), maxY)) + 'px';
+    }
+    function tryMigrateFs(video) {
+      if (fsTried) return;
+      let c = video.parentElement;
+      // 从 video 的父层往上找一个"够大"的容器当新的全屏对象；
+      // 找不到就用最近的父元素——哪怕不够理想，也比 nothing 强（这种情况本身就少见）。
+      let pick = c;
+      for (let i = 0; c && i < 8; i++) {
+        const r = c.getBoundingClientRect();
+        if (r.width >= window.innerWidth * 0.5 && r.height >= window.innerHeight * 0.5) { pick = c; break; }
+        c = c.parentElement;
       }
-    };
+      c = pick;
+      if (!c || c === video) return;
+      fsTried = true;
+      // 关键：**不要**先 exitFullscreen()。那会让人先掉出全屏，紧接着的 requestFullscreen
+      // 反而可能因为"没有用户手势"被拒，把用户的全屏弄没了——比不做还糟。
+      // 正确做法是在全屏状态下直接请求另一个元素：浏览器若支持会自动切换
+      // （随之触发 fullscreenchange，我们就会挂到新容器上），不支持则什么也不发生。
+      const req = (el) => {
+        const f = el.requestFullscreen || el.webkitRequestFullscreen;
+        return f ? Promise.resolve(f.call(el)) : Promise.reject(new Error('no fullscreen api'));
+      };
+      req(c).catch(() => {});
+    }
+    function enterFs(host) {
+      if (fsSaved) return;                    // 已记录过原始挂载点，别重复覆盖
+      fsSaved = {
+        parent: panel.parentNode,
+        next: panel.nextSibling,
+        left: panel.style.left, top: panel.style.top,
+        right: panel.style.right, bottom: panel.style.bottom,
+        windowed: panel.classList.contains('ll-windowed'),
+        collapsed: panel.classList.contains('ll-collapsed')
+      };
+      panel.classList.add('ll-in-fs');
+      host.appendChild(panel);
+      const hadPos = fsSaved.windowed && panel.style.left && panel.style.top;
+      setWindowed(true);
+      setCollapsed(false);
+      if (hadPos) {
+        fsClamp(parseFloat(panel.style.left) || 0, parseFloat(panel.style.top) || 0);
+      } else {
+        // 之前是钉在右侧的通栏面板，全屏下会占掉整屏右边 → 给个底部居中的默认位
+        const r = panel.getBoundingClientRect();
+        const w = r.width || 320;
+        const h = r.height || 120;
+        fsClamp(Math.round((window.innerWidth - w) / 2), Math.round(window.innerHeight - h - 90));
+      }
+      applyPanelOpacity();
+      showToast(t('fsToast'));
+    }
+    function leaveFs() {
+      const s = fsSaved;
+      if (!s) return;
+      fsSaved = null;
+      panel.classList.remove('ll-in-fs');
+      setWindowed(s.windowed);
+      setCollapsed(s.collapsed);
+      applyPanelOpacity();
+      try {
+        if (s.parent && s.parent.isConnected) s.parent.insertBefore(panel, s.next && s.next.isConnected ? s.next : null);
+        else document.body.appendChild(panel);
+      } catch (e) {
+        try { document.body.appendChild(panel); } catch (e2) { /* noop */ }
+      }
+      panel.style.left = s.left;
+      panel.style.top = s.top;
+      panel.style.right = s.right;
+      panel.style.bottom = s.bottom;
+    }
+    function syncFs() {
+      const el = currentFsEl();
+      if (!el) { if (fsHosted) leaveFs(); fsHosted = null; return; }
+      const host = fsHostOf(el);
+      if (!host) { if (fsHosted) leaveFs(); fsHosted = null; tryMigrateFs(el); return; }
+      if (host !== fsHosted) { enterFs(host); fsHosted = host; }
+    }
+    document.addEventListener('fullscreenchange', syncFs);
+    document.addEventListener('webkitfullscreenchange', syncFs);
+    // 兜底轮询：事件偶尔被吞掉、或打开页面时就已经在全屏，也能追上
+    setInterval(syncFs, 1200);
+    syncFs();
 
     const list = document.getElementById('ll-list');
     list.addEventListener('click', onListClick);
@@ -533,6 +779,7 @@
     const sel = document.getElementById('ll-track');
     const sel2 = document.getElementById('ll-track2');
     if (!sel) return;
+    const keep = selectedTrack;    // 重建后还原选中项（新增译文轨道时会调用到这里）
     sel.innerHTML = '';
     if (sel2) sel2.innerHTML = '<option value="-1">对照：无</option>';
     if (!subtitleTracks.length) {
@@ -553,6 +800,7 @@
         sel2.appendChild(o2);
       }
     });
+    if (keep >= 0 && keep < subtitleTracks.length) sel.value = String(keep);
   }
 
   // ---------- 字幕列表渲染 ----------
@@ -605,7 +853,10 @@
       span.className = 'll-word';
       span.textContent = t;
       const clean = t.replace(/[^\p{L}'’]/gu, '');
-      if (clean) span.dataset.word = clean;
+      // 整句级的纯 CJK token（中文译文行、无空格的日语行）不挂查词，
+      // 否则点一下就是拿一整句话去查词典 / 唤起欧路。
+      const isSentence = clean && !/[A-Za-z]/.test(clean) && clean.length > 24;
+      if (clean && !isSentence) span.dataset.word = clean;
       else span.classList.add('ll-punct');
       container.appendChild(span);
     });
@@ -700,30 +951,82 @@
       // 注：程序化“选中文本”不会触发欧路的划词/悬停取词（那需要真实鼠标事件），
       // 所以这里直接调 eudic:// 协议，让欧路自己弹出释义。
       openEudic(w);
+    } else if (dictSource === 'llm') {
+      // 大模型模式：带语境句问大模型，返回词性/释义/说明/例句结构化卡片
+      showDictLoading(span, w);
+      lookupLlmAndShow(span, w);
     } else {
       showDictLoading(span, w);
       lookupAndShow(span, w);
     }
   }
 
-  // 双击存生词：同样列表/浮窗共用。
-  function handleWordSave(span) {
+  // 取单词所在行的原文，作为大模型查词的语境（列表行取 .ll-text，浮窗取整行）
+  function wordContextOf(span) {
+    const cue = span.closest ? span.closest('.ll-cue') : null;
+    if (cue) {
+      const tx = cue.querySelector('.ll-text');
+      if (tx && tx.textContent.trim()) return tx.textContent.trim();
+    }
+    const live = span.closest ? span.closest('#ll-live') : null;
+    if (live && live.textContent.trim()) return live.textContent.trim();
+    return '';
+  }
+  // 点词走大模型：后台 dictLlm 返回结构化释义卡片
+  function lookupLlmAndShow(span, word) {
+    const context = wordContextOf(span);
+    chrome.runtime.sendMessage({ type: 'dictLlm', word: word, context: context, tl: translateTarget }, (resp) => {
+      removePopup();
+      const pop = document.createElement('div');
+      pop.id = 'll-popup';
+      if (!resp || !resp.ok) {
+        pop.innerHTML = `<div class="ll-pop-word">${escapeHtml(word)}</div>` +
+          `<div class="ll-pop-def">${escapeHtml((resp && resp.error) || t('llmFail'))}</div>`;
+      } else {
+        llmDefCache[word.toLowerCase()] = resp;   // 缓存，供双击存生词时直接复用
+        pop.innerHTML = `<div class="ll-pop-word">${escapeHtml(resp.word || word)}</div>` +
+          (resp.html || '') + `<div class="ll-pop-tip">${escapeHtml(t('dictTipLlm'))}</div>`;
+      }
+      positionPopup(pop, span);
+      setTimeout(() => document.addEventListener('click', outsideClose, { once: true }), 0);
+    });
+  }
+
+  // 双击存生词：同样列表/浮窗共用。大模型模式下自动把释义写进注释。
+  async function handleWordSave(span) {
     if (!span || !span.dataset || !span.dataset.word) return false;
     const word = span.dataset.word;
+    // 大模型模式下：优先用点词时已缓存的释义；没有就现查一次，写进生词注释
+    let note = '';
+    if (dictSource === 'llm') {
+      try {
+        let cached = llmDefCache[word.toLowerCase()];
+        if (!cached || !cached.ok) {
+          cached = await new Promise((res) => chrome.runtime.sendMessage(
+            { type: 'dictLlm', word: word, context: wordContextOf(span), tl: translateTarget },
+            (r) => res(r || { ok: false })
+          ));
+        }
+        if (cached && cached.ok) {
+          note = String(cached.def || cached.text || '').trim();
+          llmDefCache[word.toLowerCase()] = cached;
+        }
+      } catch (e) { /* 查词失败时注释留空，不影响存词 */ }
+    }
     chrome.storage.local.get({ vocab: [] }, (r) => {
       let list = r.vocab || [];
       if (!list.find((v) => v.word.toLowerCase() === word.toLowerCase())) {
         const now = Date.now();
-        list = [{ word: word, addedAt: now, box: 1, due: now, note: '' }, ...list].slice(0, 200);
+        list = [{ word: word, addedAt: now, box: 1, due: now, note: note }, ...list].slice(0, 200);
         chrome.storage.local.set({ vocab: list });
         span.classList.add('ll-saved');
         setTimeout(() => span.classList.remove('ll-saved'), 900);
-        showToast('✓ 已存入生词本：' + word);
+        showToast(t('saved') + word);
       } else {
-        showToast('已在生词本：' + word);
+        showToast(t('inVocab') + word);
       }
       const btn = document.getElementById('ll-vocab-btn');
-      if (btn) btn.textContent = '生词(' + list.length + ')';
+      if (btn) btn.textContent = t('vocabBtn').replace('(0)', '(' + list.length + ')');
     });
     return true;
   }
@@ -771,14 +1074,14 @@
     chrome.storage.local.get({ vocab: [] }, (r) => {
       const list = (r.vocab || []).map((v) => ({ box: 1, due: 0, note: '', ...v }));
       const btn = document.getElementById('ll-vocab-btn');
-      if (btn) btn.textContent = '生词(' + list.length + ')';
+      if (btn) btn.textContent = t('vocabBtn').replace('(0)', '(' + list.length + ')');
       const dueCount = list.filter((v) => (v.due || 0) <= Date.now()).length;
       if (!list.length) {
-        box.innerHTML = '<div class="ll-vocab-empty">还没有保存单词。在字幕里双击单词即可加入。</div>';
+        box.innerHTML = '<div class="ll-vocab-empty">' + t('vocabEmpty') + '</div>';
         return;
       }
       const header = '<div class="ll-vocab-head">' +
-        '<span>共 ' + list.length + ' 词 · 待复习 ' + dueCount + '</span>' +
+        '<span>' + t('vocabHead', { n: list.length, d: dueCount }) + '</span>' +
         '<span class="ll-vocab-tools">' +
         '<button id="ll-export-btn" class="ll-vocab-tool" title="导出为本地 JSON 文件">导出</button>' +
         '<button id="ll-import-btn" class="ll-vocab-tool" title="从本地 JSON 文件导入">导入</button>' +
@@ -1206,14 +1509,14 @@
       pop.id = 'll-popup';
       if (!resp || !resp.ok) {
         pop.innerHTML = `<div class="ll-pop-word">${escapeHtml(word)}</div>` +
-          `<div class="ll-pop-def">未找到释义。内置词库主要收录英文；其它语种请在设置中配置「整句翻译」。</div>`;
+          `<div class="ll-pop-def">${escapeHtml(t('dictNotFound'))}</div>`;
       } else {
         const ph = (resp.phonetics && resp.phonetics.length) ? '/' + resp.phonetics[0] + '/' : '';
         const defs = (resp.meanings || []).map((m) =>
           `<div class="ll-pos">${escapeHtml(m.pos || '')}</div><div class="ll-def">${escapeHtml(m.def)}</div>`
         ).join('');
         pop.innerHTML = `<div class="ll-pop-word">${escapeHtml(resp.word)} <span class="ll-ph">${ph}</span></div>` +
-          defs + `<div class="ll-pop-tip">双击单词可存入生词本</div>`;
+          defs + `<div class="ll-pop-tip">${escapeHtml(t('dictTip'))}</div>`;
       }
       positionPopup(pop, span);
       setTimeout(() => document.addEventListener('click', outsideClose, { once: true }), 0);
@@ -1276,7 +1579,7 @@
     if (usingDomFallback) return;
     if (currentSite === 'youtube') return loadYoutubeSubtitles();
     if (currentSite === 'bilibili') return loadBiliSubtitles();
-    setStatus('当前站点（' + location.hostname + '）暂不支持自动字幕；生词本与复习功能仍可用。');
+    setStatus(t('notSupported', { host: location.hostname }));
   }
 
   // ---------- YouTube 适配器 ----------
@@ -1358,8 +1661,7 @@
     subtitleTracks = tracks.map((t) => ({ lan: t.lan, lan_doc: t.lan_doc, url: t.url, _fmt: 'yt' }));
     if (typeof populateTrackSelect === 'function') populateTrackSelect();
     // 自动优先选非中文轨道（学外语），否则选第一条
-    let preferred = subtitleTracks.findIndex((t) => !/ch|zh|cn|中文|简体|繁体/i.test(t.lan + t.lan_doc));
-    if (preferred < 0) preferred = 0;
+    const preferred = pickMainTrack();
     const sel = document.getElementById('ll-track');
     if (sel) sel.value = String(preferred);
     selectTrack(preferred);
@@ -1397,16 +1699,18 @@
     cues = parsed.cues;
     liveKey = '';   // 换轨道 / 换视频后强制重建实时字幕行
     dataReady = true; loadFailed = false;
+    selectedTrack = (selectedTrack >= 0 && selectedTrack < subtitleTracks.length) ? selectedTrack : 0;
     lastYtRaw = { ok: true, fmt: parsed.fmt + '(截获)', len: d.body.length, preview: d.body.slice(0, 160) };
     try { renderList(); } catch (e) { /* noop */ }
     const name = subtitleTracks[selectedTrack] ? subtitleTracks[selectedTrack].lan_doc : '字幕';
     setStatus('已截获播放器加载的「' + name + '」字幕，共 ' + cues.length + ' 行。播放后可点 ▶ 跟读。');
     // 同步尝试双语对照
-    let secIdx = subtitleTracks.findIndex((t) => /ch|zh|cn|中文|简体|繁体/i.test(t.lan + t.lan_doc));
+    const secIdx = pickChineseTrack();
     if (secIdx >= 0 && secIdx !== selectedTrack) {
       const s2 = document.getElementById('ll-track2');
       if (s2 && s2.value === '-1') { s2.value = String(secIdx); try { selectTrack2(secIdx); } catch (e) { /* noop */ } }
     }
+    try { maybeAutoTranslate(selectedTrack); } catch (e) { /* noop */ }
   }
   // 接收 yt-main.js（MAIN world）通过 postMessage 转发的轨道列表 / 字幕正文
   function onYtBridgeMessage(e) {
@@ -1450,6 +1754,223 @@
       clearInterval(iv);
       if (!handled) setStatus('未能从 YouTube 页面读取到字幕信息（可能该视频无 CC 字幕，或页面尚未加载完，可点 ⟳ 重试）。');
     }, 20000);
+  }
+
+  // ---------- AI 中文译文轨道 ----------
+  // 触发时机：主轨道加载完成、且确实「没有中文轨道」时自动跑；也可点面板上的「译中文」手动跑。
+  // 产物：往 subtitleTracks 追加一条 _virtual 轨道 → 下拉里多出「中文（AI 翻译）」，
+  // 既可当主轨道（列表全中文），也可当对照轨道（窗口化浮窗里原文下方叠一行中文）。
+
+  function isChineseTrack(t) {
+    return /ch|zh|cn|中文|简体|繁体/i.test(String((t && (t.lan + ' ' + t.lan_doc)) || ''));
+  }
+  // 自动选主轨道时排除虚拟轨道（译文轨道不该被当成"原文"选中）
+  function pickMainTrack() {
+    let i = subtitleTracks.findIndex((t) => !t._virtual && !isChineseTrack(t));
+    if (i < 0) i = subtitleTracks.findIndex((t) => !t._virtual);
+    if (i < 0) i = 0;
+    return i;
+  }
+  // 选对照轨道：真·中文轨道优先；没有就用「当前主轨道的译文轨道」
+  function pickChineseTrack() {
+    let i = subtitleTracks.findIndex((t) => !t._virtual && isChineseTrack(t));
+    if (i >= 0 && i !== selectedTrack) return i;
+    i = subtitleTracks.findIndex((t) => t._virtual && t._src === selectedTrack);
+    return i;
+  }
+  function currentVideoKey() {
+    if (currentSite === 'youtube') return 'yt:' + (ytLastVideoId || ytUrlVideoId() || '');
+    return 'bili:' + (bvid || cid || '');
+  }
+  function srcLangOf(idx) {
+    const t = subtitleTracks[idx];
+    let lan = String((t && t.lan) || '').split('-')[0].toLowerCase();
+    if (!lan && cues.length) {
+      const s = cues[0].text || '';
+      if (/[\u3040-\u30ff]/.test(s)) lan = 'ja';
+      else if (/[\uac00-\ud7af]/.test(s)) lan = 'ko';
+      else if (/[\u0400-\u04ff]/.test(s)) lan = 'ru';
+      else lan = 'en';
+    }
+    return lan || '';
+  }
+  function engineLabel() {
+    if (trEngine === 'llm') return '大模型 API';
+    if (trEngine === 'google') return 'Google 免费翻译';
+    if (trEngine === 'mymemory') return 'MyMemory';
+    return '大模型→Google→MyMemory';
+  }
+
+  // 译文缓存：同一视频同一轨道不再重复翻译（存 chrome.storage.local，最多 30 条）
+  function getTrCache(key) {
+    return new Promise((resolve) => {
+      try {
+        chrome.storage.local.get({ llTrCache: {} }, (r) => {
+          const e = (r && r.llTrCache ? r.llTrCache : {})[key];
+          resolve(e || null);
+        });
+      } catch (e) { resolve(null); }
+    });
+  }
+  function putTrCache(key, tl, texts) {
+    try {
+      chrome.storage.local.get({ llTrCache: {} }, (r) => {
+        const m = (r && r.llTrCache) ? r.llTrCache : {};
+        m[key] = { ts: Date.now(), tl: tl, texts: texts };
+        const ks = Object.keys(m);
+        if (ks.length > 30) {
+          ks.sort((a, b) => (m[a].ts || 0) - (m[b].ts || 0));
+          for (let i = 0; i < ks.length - 30; i++) delete m[ks[i]];
+        }
+        chrome.storage.local.set({ llTrCache: m });
+      });
+    } catch (e) { /* 缓存失败不影响功能 */ }
+  }
+
+  function setTrButton(running) {
+    const b = document.getElementById('ll-tr');
+    if (!b) return;
+    b.textContent = running ? '停止' : '译中文';
+    b.title = running ? '停止本次翻译' : '把当前字幕轨道翻译成中文，生成一条新的「中文（AI 翻译）」轨道';
+    b.classList.toggle('ll-tr-on', !!running);
+  }
+
+  function ensureVirtualTrack(srcIdx) {
+    let i = subtitleTracks.findIndex((t) => t._virtual && t._src === srcIdx);
+    if (i < 0) {
+      subtitleTracks.push({
+        lan: 'zh-CN',
+        lan_doc: '中文（AI 翻译）',
+        url: 'll-translate://' + srcIdx,
+        _virtual: true,
+        _src: srcIdx
+      });
+      i = subtitleTracks.length - 1;
+    }
+    return i;
+  }
+
+  // 把译文写进虚拟轨道，并自动挂到「对照轨道」
+  async function applyTranslation(srcIdx, key, texts, engine, gen) {
+    if (gen !== trGen) return;   // 期间切了视频 → 丢弃
+    const translated = [];
+    cues.forEach((c, i) => {
+      const t = String((texts[i] || '')).trim();
+      if (t) translated.push({ index: i, from: c.from, to: c.to, text: t });
+    });
+    if (!translated.length) {
+      lastTrInfo = { ok: false, error: '翻译结果为空' };
+      setStatus('翻译完成但结果为空（可能接口被限流）。可稍后点「译中文」重试，或在插件设置里换引擎。');
+      return;
+    }
+    trStore[srcIdx] = { key: key, tl: translateTarget, cues: translated };
+    const vIdx = ensureVirtualTrack(srcIdx);
+    // 重建下拉（带新轨道），并把已选中的两项还原回去
+    populateTrackSelect();
+    const sel = document.getElementById('ll-track');
+    if (sel && selectedTrack >= 0) sel.value = String(selectedTrack);
+    const sel2 = document.getElementById('ll-track2');
+    if (sel2) sel2.value = String(vIdx);
+    await selectTrack2(vIdx);
+    liveKey = '';
+    updateLive();
+    lastTrInfo = { ok: true, engine: engine, lines: translated.length };
+    setStatus('已生成「中文（AI 翻译）」轨道（' + translated.length + ' 行 / ' + engine + '）。已自动设为对照轨道：窗口化浮窗里原文下方叠中文；也可在主轨道下拉里选它只看中文。');
+  }
+
+  async function startTranslation(srcIdx, opts) {
+    opts = opts || {};
+    if (trRunning) return;
+    if (srcIdx == null || srcIdx < 0 || !cues.length) { showToast('当前没有可翻译的字幕'); return; }
+    const track = subtitleTracks[srcIdx];
+    if (!opts.force && track && (track._virtual || isChineseTrack(track))) {
+      showToast('当前轨道已经是中文，无需翻译');
+      return;
+    }
+    const src = cues.map((c) => c.text);
+    // 缓存键带上引擎：换引擎（免费机翻 ↔ 大模型）后，重点「译中文」才会重新翻译
+    const key = currentVideoKey() + '|' + (track ? (track.lan || '') : '') + '|' + translateTarget + '|' + trEngine + '|' + md5hex(src.join('\n'));
+    const cached = await getTrCache(key);
+    if (cached && cached.texts && cached.texts.length === src.length && cached.tl === translateTarget) {
+      await applyTranslation(srcIdx, key, cached.texts, '缓存', trGen);
+      return;
+    }
+
+    const gen = trGen;
+    trRunning = true; trAbort = false;
+    setTrButton(true);
+    const idxs = [];
+    src.forEach((t, i) => { if (t && t.trim()) idxs.push(i); });
+    const MAX_LINES = 1500;
+    const work = idxs.slice(0, MAX_LINES);
+    const out = new Array(src.length).fill('');
+    const CHUNK = 40;
+    let done = 0;
+    let fatal = null;
+    let realEngine = engineLabel();
+    const notes = [];
+    setStatus('正在翻译成中文… 0/' + work.length + ' 行（' + realEngine + '）');
+    for (let p = 0; p < work.length; p += CHUNK) {
+      if (trAbort || gen !== trGen) break;
+      const slice = work.slice(p, p + CHUNK);
+      const texts = slice.map((i) => src[i]);
+      const res = await new Promise((resolve) => {
+        try {
+          chrome.runtime.sendMessage(
+            { type: 'translateBatch', texts: texts, sl: srcLangOf(srcIdx), tl: translateTarget, engine: trEngine },
+            (r) => {
+              if (chrome.runtime && chrome.runtime.lastError) resolve({ ok: false, error: chrome.runtime.lastError.message });
+              else resolve(r || { ok: false, error: '后台无响应' });
+            }
+          );
+        } catch (e) { resolve({ ok: false, error: String(e) }); }
+      });
+      if (!res || !res.ok) { fatal = (res && res.error) || '未知错误'; break; }
+      if (res.engine) realEngine = res.engine;         // 后台实际用的是哪个（可能被回退了）
+      if (res.note && notes.indexOf(res.note) < 0) notes.push(res.note);
+      const arr = res.results || [];
+      slice.forEach((gi, k) => { out[gi] = String(arr[k] || '').trim(); });
+      done += slice.length;
+      setStatus('正在翻译成中文… ' + done + '/' + work.length + ' 行（' + realEngine + '）');
+      await new Promise((r) => setTimeout(r, 150));  // 免费接口，别打太猛
+    }
+    trRunning = false; trAbort = false;
+    setTrButton(false);
+    if (gen !== trGen) return;   // 切视频了，结果作废
+
+    const hitCount = out.filter((s) => s).length;
+    lastTrInfo = fatal ? { ok: false, error: fatal } : { ok: true, engine: realEngine, lines: hitCount };
+    if (fatal && !hitCount) {
+      let hint = '（详细原因见下方；可点「诊断」查看上次错误）';
+      if (/401|403/.test(fatal)) hint = '（API Key 不对或没权限，去平台检查一下）';
+      else if (/404/.test(fatal)) hint = '（404：API 地址或模型名填错了，去平台复制最新的模型名）';
+      else if (/HTTP 429|额度|quota|限流/i.test(fatal)) hint = '（限流 / 额度用尽，过一会再点「译中文」即可）';
+      else if (/Failed to fetch|NetworkError|ERR_/i.test(fatal)) hint = '（连不上：检查网络、代理，或该域名是否已授权）';
+      setStatus('翻译失败：' + fatal + hint);
+      return;
+    }
+    if (!hitCount) { setStatus('翻译未返回任何结果。可点「译中文」重试。'); return; }
+    putTrCache(key, translateTarget, out);
+    const tail = notes.length ? '；' + notes.join('；') : '';
+    await applyTranslation(srcIdx, key, out, (fatal ? realEngine + '（部分失败）' : realEngine) + tail, gen);
+  }
+
+  // 自动翻译判定：开了开关 + 不是 DOM 兜底 + 当前轨道非中文 + 确实没有真中文轨道
+  async function maybeAutoTranslate(srcIdx) {
+    try {
+      if (!autoTranslate || usingDomFallback || trRunning) return;
+      if (!cues.length) return;
+      const t = subtitleTracks[srcIdx];
+      if (!t || t._virtual || isChineseTrack(t)) return;
+      const realZh = subtitleTracks.findIndex((x) => !x._virtual && isChineseTrack(x));
+      if (realZh >= 0) return;   // 本来就有中文轨道，没必要翻译
+      await startTranslation(srcIdx, {});
+    } catch (e) { log('自动翻译失败', e); }
+  }
+
+  function onTranslateClick() {
+    if (trRunning) { trAbort = true; showToast('正在停止…'); return; }
+    startTranslation(selectedTrack, {});
   }
 
   // ---------- B 站字幕加载（原 loadSubtitles） ----------
@@ -1496,8 +2017,7 @@
         return;
       }
       // 自动优先选非中文轨道（学外语），否则选第一条
-      let preferred = subtitleTracks.findIndex((t) => !/ch|zh|cn|中文|简体|繁体/i.test(t.lan + t.lan_doc));
-      if (preferred < 0) preferred = 0;
+      const preferred = pickMainTrack();
       const sel = document.getElementById('ll-track');
       if (sel) sel.value = String(preferred);
       await selectTrack(preferred);
@@ -1520,7 +2040,7 @@
       dataReady = true; loadFailed = false;
       renderList();
       // 双语自动默认：优先把"中文"轨道设为对照轨道（与主轨道不同时），窗口化浮窗即可叠两行
-      let secIdx = subtitleTracks.findIndex((t) => /ch|zh|cn|中文|简体|繁体/i.test(t.lan + t.lan_doc));
+      const secIdx = pickChineseTrack();
       if (secIdx >= 0 && secIdx !== selectedTrack) {
         const s2 = document.getElementById('ll-track2');
         if (s2 && s2.value === '-1') {
@@ -1528,6 +2048,11 @@
           await selectTrack2(secIdx);
         }
       }
+      // 译文轨道被选中但正文为空：明确提示，避免"选了没反应"
+      if (subtitleTracks[idx] && subtitleTracks[idx]._virtual && !cues.length) {
+        setStatus('该译文轨道暂无内容（翻译还没生成或已失效），点「译中文」可重新生成。');
+      }
+      try { maybeAutoTranslate(idx); } catch (e) { /* noop */ }
       if (cues.length) {
         setStatus('已加载「' + subtitleTracks[idx].lan_doc + '」字幕，共 ' + cues.length + ' 行。播放后可点 ▶ 跟读。');
       } else if (currentSite === 'youtube') {
@@ -1779,7 +2304,25 @@
       lines.push('bvid/cid: ' + bvid + ' / ' + cid);
     }
     lines.push('CC 轨道数: ' + subtitleTracks.length);
-    subtitleTracks.forEach((t, i) => lines.push('  [' + i + '] ' + t.lan_doc + '（' + t.lan + '）' + (i === selectedTrack ? ' ←已选' : '')));
+    subtitleTracks.forEach((t, i) => lines.push('  [' + i + '] ' + t.lan_doc + '（' + t.lan + '）' +
+      (t._virtual ? ' ←AI 译文轨道' : '') + (i === selectedTrack ? ' ←已选' : '') + (i === selectedTrack2 ? ' ←对照' : '')));
+    lines.push('—— AI 中文译文轨道 ——');
+    lines.push('自动翻译: ' + (autoTranslate ? '开' : '关') + '，引擎: ' + trEngine + '，目标: ' + translateTarget);
+    // 大模型配置状态（故意不打印 Key 本身，只报"有没有填 / 填了哪个地址模型"）
+    const llmCfg = await new Promise((resolve) => {
+      try { chrome.storage.local.get({ llm: {} }, (r) => resolve((r && r.llm) || {})); } catch (e) { resolve({}); }
+    });
+    lines.push('大模型 API: ' + (llmCfg.on
+      ? '已启用（' + (llmCfg.baseUrl || '地址未填') + ' · ' + (llmCfg.model || '模型未填') + ' · Key ' + (llmCfg.apiKey ? '已填' : '未填') + '）'
+      : '未启用'));
+    lines.push('译文轨道: ' + (subtitleTracks.some((t) => t._virtual)
+      ? subtitleTracks.filter((t) => t._virtual).map((t) => t.lan_doc + '(源轨道#' + t._src + ')').join('、')
+      : '未生成') + (trRunning ? '（正在翻译…）' : ''));
+    if (lastTrInfo) {
+      lines.push('上次翻译: ' + (lastTrInfo.ok ? ('成功，' + lastTrInfo.engine + '，' + (lastTrInfo.lines || 0) + ' 行') : ('失败：' + lastTrInfo.error)));
+    } else {
+      lines.push('上次翻译: 无（未触发）');
+    }
     lines.push('已加载字幕行数: ' + cues.length);
     if (lastSelectError) lines.push('字幕正文下载错误: ' + lastSelectError);
     if (currentSite !== 'youtube') {
@@ -1911,8 +2454,15 @@
       settings.eudicAction = r.eudicAction || 'lp-dict';
       dictSource = settings.dictSource;
       eudicAction = settings.eudicAction;
+      autoTranslate = r.autoTranslate !== false;
+      trEngine = r.trEngine || 'auto';
+      translateTarget = r.translateTarget || 'zh-CN';
+      uiLang = I18N[translateTarget] ? translateTarget : 'zh-CN';   // 界面语言跟随母语
+      panelOpacity = (typeof r.panelOpacity === 'number' && r.panelOpacity > 0) ? r.panelOpacity : 0.85;
+      textOpacity = (typeof r.textOpacity === 'number' && r.textOpacity >= 0) ? r.textOpacity : 1;
       const btn = document.getElementById('ll-pause');
-      if (btn) btn.textContent = '暂停：' + (settings.autoPause ? '开' : '关');
+      if (btn) btn.textContent = (settings.autoPause ? t('pauseOn') : t('pauseOff'));
+      applyPanelOpacity();
       // 切到「本地欧路词典」时提醒一次：点词将唤起欧路应用查词
       if (prevDict !== 'eudic' && dictSource === 'eudic') {
         showToast('已切换「本地欧路词典」：点词将唤起欧路查词（需已安装欧路词典；首次会询问是否允许打开）', 5000);
@@ -1921,7 +2471,7 @@
   }
 
   function syncSettings() {
-    chrome.storage.sync.get(['enabled', 'autoPause', 'dictSource', 'eudicAction'], (r) => {
+    chrome.storage.sync.get(['enabled', 'autoPause', 'dictSource', 'eudicAction', 'autoTranslate', 'trEngine', 'translateTarget', 'panelOpacity', 'textOpacity'], (r) => {
       if (chrome.runtime.lastError) return;
       applySettings(r);
     });
@@ -1932,6 +2482,9 @@
   function resetForNewVideo() {
     try { if (observer) { observer.disconnect(); observer = null; } } catch (e) {}
     observedEl = null; lastText = '';
+    // 换视频：让在飞的翻译作废（trGen 变化 → 结果被丢弃），并清空译文缓存引用
+    trGen++; trAbort = true; trRunning = false; trStore = {}; lastTrInfo = null;
+    try { setTrButton(false); } catch (e) {}
     cues = []; cues2 = []; subtitleTracks = []; selectedTrack = -1; selectedTrack2 = -1; liveKey = '';
     dataReady = false; loadFailed = false; usingDomFallback = false;
     pendingPauseAt = null; lastAutoPauseTo = null;

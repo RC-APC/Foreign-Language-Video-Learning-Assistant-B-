@@ -30,8 +30,18 @@ select, input {
   border-radius: 6px;
 }
 .hint.show { display: block; }
+.hint.ok {
+  color: #2b8a3e;
+  background: #ebfbee;
+  border-color: #b2f2bb;
+  word-break: break-all;
+}
 .eudicbox { display: none; }
 .eudicbox.show { display: block; }
+#llmBox { display: none; }
+#llmBox.show { display: block; }
+#llmTest { margin-top: 6px; }
+#llmTest:disabled { opacity: 0.6; cursor: default; }
 .hint code {
   padding: 0 3px;
   font-size: 10px;

@@ -86,6 +86,41 @@
 #ll-panel.ll-windowed #ll-live { display: block; }
 /* 窗口化浮窗显式保留「暂停」按钮，自动暂停跟读照常可用 */
 #ll-panel.ll-windowed #ll-pause { display: inline-block !important; }
+/* 全屏浮窗：面板被临时挂进全屏容器后才能显示，这里用 !important 顶住播放器 CSS
+   （全屏容器经常带自己的 reset / filter / transform，会把定位和层级带跑） */
+#ll-panel.ll-in-fs {
+  position: fixed !important;
+  z-index: 2147483647 !important;
+  width: auto;
+  max-width: 72vw !important;
+  bottom: auto !important;
+  background: rgba(255, 255, 255, 0.97);
+  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.45);
+}
+#ll-panel.ll-in-fs #ll-bar { cursor: move; }
+#ll-panel.ll-in-fs #ll-live { font-size: 18px; line-height: 1.55; padding: 10px 14px; }
+#ll-panel.ll-in-fs #ll-live .ll-live-sub { font-size: 14px; }
+
+/* 浮窗透明度拆分：背景(--ll-bg-op) 与 文字(--ll-tx-op) 分别独立，不再把整块 panel 设 opacity
+   （旧逻辑 panel.style.opacity 会把文字一起调暗，导致字幕看不清）。变量默认值写在此处，JS 实时覆盖。 */
+#ll-panel.ll-windowed, #ll-panel.ll-in-fs {
+  --ll-bg-op: 0.85;
+  --ll-tx-op: 1;
+  background: rgba(255, 255, 255, var(--ll-bg-op));
+}
+#ll-panel.ll-windowed #ll-bar, #ll-panel.ll-in-fs #ll-bar {
+  background: linear-gradient(135deg, rgba(79,110,247,var(--ll-bg-op)), rgba(106,79,247,var(--ll-bg-op)));
+}
+#ll-panel.ll-windowed #ll-live, #ll-panel.ll-in-fs #ll-live {
+  background: rgba(246,247,249, var(--ll-bg-op));
+}
+/* 文字透明度只作用于文字元素，不动背景 */
+#ll-panel.ll-windowed .ll-title, #ll-panel.ll-in-fs .ll-title,
+#ll-panel.ll-windowed #ll-live .ll-live-main, #ll-panel.ll-in-fs #ll-live .ll-live-main,
+#ll-panel.ll-windowed #ll-live .ll-live-sub, #ll-panel.ll-in-fs #ll-live .ll-live-sub {
+  opacity: var(--ll-tx-op);
+}
+
 #ll-btn, .ll-btn {
   border: none;
   background: rgba(255, 255, 255, 0.18);
@@ -119,6 +154,10 @@
 }
 #ll-subbar .ll-btn { background: #e9ecef; color: #4263eb; }
 #ll-subbar .ll-btn:hover { background: #dbe4ff; }
+#ll-tr { flex: 0 0 auto; white-space: nowrap; }
+#ll-tr.ll-tr-on { background: #fff3bf; color: #e8590c; }
+/* 对照行（多为中文译文）加深一档，避免和上面的原文糊在一起 */
+#ll-live .ll-live-sub { color: #495057; }
 
 #ll-list {
   flex: 1 1 auto;
@@ -414,5 +453,7 @@
 #ll-popup .ll-load { color: #99a0aa; font-size: 12px; font-weight: 400; }
 #ll-popup .ll-pos { color: #69db7c; font-size: 11px; margin-top: 6px; }
 #ll-popup .ll-def { margin-bottom: 2px; }
+#ll-popup .ll-def-note { color: #a5d8ff; margin-top: 4px; font-size: 12px; line-height: 1.4; }
+#ll-popup .ll-def-ex { color: #ffec99; margin-top: 4px; font-size: 12px; line-height: 1.4; font-style: italic; }
 #ll-popup .ll-pop-tip { margin-top: 8px; color: #99a0aa; font-size: 11px; }
 #ll-popup .ll-pop-def { color: #ffd8a8; }

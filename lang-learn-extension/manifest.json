@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "外语视频学习助手",
-  "version": "0.7.25",
+  "version": "0.7.30",
   "description": "在 B 站 / YouTube 看外语视频时辅助学习：右侧字幕列表逐句跟读，点词查词（可联动本机欧路词典 / 导入本地词库），双击存生词、加注释、按记忆曲线复习，支持单句音频下载与生词导出备份。数据全部存本地，无需账号。支持 Chrome / Edge / 夸克 / Kiwi。",
   "permissions": ["storage", "unlimitedStorage", "activeTab", "tabCapture", "downloads"],
   "host_permissions": [
@@ -12,8 +12,22 @@
     "https://m.youtube.com/*",
     "https://youtu.be/*",
     "https://api.dictionaryapi.dev/*",
-    "https://en.wiktionary.org/*"
+    "https://en.wiktionary.org/*",
+    "https://translate.googleapis.com/*",
+    "https://translate.google.com/*",
+    "https://api.mymemory.translated.net/*",
+    "https://api.deepseek.com/*",
+    "https://api.siliconflow.cn/*",
+    "https://open.bigmodel.cn/*",
+    "https://api.moonshot.cn/*",
+    "https://dashscope.aliyuncs.com/*",
+    "https://ark.cn-beijing.volces.com/*",
+    "https://api.openai.com/*",
+    "https://api.groq.com/*",
+    "http://localhost:*/*",
+    "http://127.0.0.1:*/*"
   ],
+  "optional_host_permissions": ["https://*/*", "http://*/*"],
   "content_scripts": [
     {
       "matches": [
