@@ -12,7 +12,19 @@
   let cues2 = [];         // 对照（双语）轨道的当前字幕
   let liveKey = '';       // 实时字幕已渲染的 key：同一个 key 不重写 DOM，避免每帧把弹出的释义冲掉
   let pendingPauseAt = null;
+  // 与 pendingPauseAt 配套的那一行。暂停时直接用它做"锁住刚听完的那一句"，
+  // 比事后按 |c.to - at| < 0.05 反查可靠——因为实际暂停点可能被"下一句起点"裁剪过，
+  // 不再等于任何一行的 to，反查就会失手（→ 实时行立刻滑到下一句，▶ 与 🎤 又对不上）。
+  let pendingPauseCue = null;
   let lastAutoPauseTo = null;
+  // 已挂上事件监听的 video 元素。YouTube 的播放器是 JS 动态建立的，内容脚本初始化时
+  // video 可能还不存在；SPA 切视频也可能换掉元素。存下来才能"自愈重挂"，否则
+  // timeupdate 永远不来 → 高亮、实时行、自动暂停全部静默失效。
+  let wiredEl = null;
+  // shadow() 发出程序化 seek 后，currentTime 在流式（MSE）播放器上不会立刻更新，
+  // 这段时间内不能用它判定"是否到达句尾"，否则会一按 ▶ 就立刻暂停。
+  let seekGuardUntil = 0;
+  let autoPauseInfo = null;      // 最近一次自动暂停：{ at, idx, when }（仅诊断用）
   // 自动暂停 / 点句复读会把视频正好停在「上一句的 to」上。若此时按 currentTime 取"最后一条 from<=t"，
   // 会取到还没播的下一句 → 实时行（以及小窗里的 ▶ / 🎤）跳到下一句，出现"点播放是这句、点录音变下一句"。
   // 所以停住时把那一行"锁住"，播放 / 拖动进度后自动解锁。
@@ -62,6 +74,9 @@
   let trGen = 0;               // 视频切换代号：防止旧视频的翻译结果串台到新视频
   let trStore = {};            // srcIdx -> { key, tl, cues:[] }（译文正文，供虚拟轨道读取）
   let lastTrInfo = null;       // 上次翻译结果（引擎 / 错误），供诊断显示
+  // 渐进式翻译进度：{ done, total, ready, engine }。译文是**边翻边上屏**的，
+  // 所以这里记的是"已经翻完多少行 / 已经有多少行真正显示出来"，供状态栏与诊断使用。
+  let trProgress = null;
 
   // 站点适配：bilibili / youtube / unsupported
   let currentSite = 'bilibili';
@@ -595,8 +610,10 @@
       settings.autoPause = !settings.autoPause;
       chrome.storage.sync.set({ autoPause: settings.autoPause });
       e.target.textContent = (settings.autoPause ? t('pauseOn') : t('pauseOff'));
+      // 开关切换时丢掉旧目标：关着的时候目标可能已经过期，重新打开会一上来就立刻暂停
+      pendingPauseAt = null; pendingPauseCue = null; lastAutoPauseTo = null;
     };
-    if (settings.autoPause) document.getElementById('ll-pause').textContent = '暂停：开';
+    document.getElementById('ll-pause').textContent = settings.autoPause ? t('pauseOn') : t('pauseOff');
     // 小窗跟读按钮的显隐开关（只在窗口化态可见）：关掉后浮窗就只剩一行干净的字幕
     function refreshShadowBtn() {
       const b = document.getElementById('ll-shadow');
@@ -901,6 +918,48 @@
     });
   }
 
+  // ---------- 自动暂停的"这一句到底停在哪儿" ----------
+  // 问题：YouTube 自动生成（ASR）字幕的分段和"人耳听到的句子"并不一致——常见两种形态：
+  //   ① 滚动式：同一句被拆成多条事件，文本逐条累积（后一条包含前一条），时间上互相重叠；
+  //   ② 事件时长偏大：dDurationMs 一直延伸到"这一行被替换"为止，于是 to 落进了下一句里。
+  // 结果就是：点 ▶ 复读某一行，实际会读到下一句才停（用户感知=「读了两句」）。
+  // 修法：把暂停点从 cue.to 收紧到「下一句真正开始的地方」——
+  // 即后面第一条"文本不是本句延续"的行的 from（若它早于 cue.to）。
+  // 正常 CC（B 站等）：下一行 from == 本行 to → 收紧后不变，行为完全一致。
+  function normCueText(s) {
+    return String(s || '')
+      .replace(/[\s\u3000]+/g, '')
+      .replace(/[.,!?;:'"“”‘’、。，！？；：…—－\-~～()（）\[\]【】]/g, '')
+      .toLowerCase();
+  }
+  // b 是不是 a 的"同句延续"：文本互相包含（滚动式累积），或文本完全相同且时间上重叠（重复显示）
+  function isCueContinuation(a, b) {
+    const x = normCueText(a.text), y = normCueText(b.text);
+    if (!x || !y) return false;
+    if (x === y) return b.from < a.to - 0.05;      // 同文且重叠 → 同句重复渲染；同文但不重叠 → 是另一句
+    return y.indexOf(x) >= 0 || x.indexOf(y) >= 0;  // 「今日は」→「今日はいい天気」这类累积
+  }
+  // 这一行"实际该播到哪"。只收紧、不放大；cue 必须是 arr 里的对象。
+  function effectiveCueEnd(cue, arr) {
+    if (!cue) return 0;
+    const list = arr || cues;
+    let end = cue.to;
+    for (let i = cue.index + 1; i < list.length; i++) {
+      const c = list[i];
+      if (c.from <= cue.from + 0.05) continue;      // 同一时刻起步的重复行：跳过
+      if (isCueContinuation(cue, c)) continue;      // 同句的后续事件：不算"下一句"
+      if (c.from < end) end = c.from;               // 下一句已经开口 → 本句到此为止
+      break;                                        // 后面的 from 只会更晚，不必再找
+    }
+    return end > cue.from ? end : cue.to;           // 兜底：别裁成一个非法区间
+  }
+  // 诊断用：有多少行的 to 被"下一句起点"裁剪过
+  function countTrimmedCues(arr) {
+    let n = 0;
+    for (const c of arr) { if (effectiveCueEnd(c, arr) < c.to - 0.05) n++; }
+    return n;
+  }
+
   function currentCursorCue() {
     const v = getVideo();
     const t = v ? v.currentTime : 0;
@@ -964,7 +1023,13 @@
       return;
     }
     const cur = currentCursorCue();
-    const cur2 = cues2.length ? cursorCueFrom(cues2) : null;
+    let cur2 = cues2.length ? cursorCueFrom(cues2) : null;
+    // 渐进式翻译期间 cues2 只有"前若干行"：若被选中的那条对照轨恰好是 AI 译文虚拟轨道，
+    // 而它给出的这一条并不是当前原句的译文（时间轴对不上），就不要挂在原文下面——
+    // 否则视频播到第 100 行时，下面挂的会是第 8 行的旧译文。
+    // 只对虚拟译文轨道做这个校验：真实的双语轨道允许时间轴有各自的偏移，不去动它。
+    const vSub = subtitleTracks[selectedTrack2];
+    if (cur2 && cur && vSub && vSub._virtual && Math.abs(cur2.from - cur.from) > 0.35) cur2 = null;
     if (!cur && !cur2) {
       if (liveKey === 'none') return;
       liveKey = 'none';
@@ -1484,85 +1549,18 @@
     const v = getVideo();
     if (!v) return;
     // 「暂停：开」→ 本句放完自动暂停；「暂停：关」→ 从该句起连续播放（不打断）
-    pendingPauseAt = settings.autoPause ? cue.to : null;
+    // 目标用 effectiveCueEnd 而不是 cue.to：ASR 轨道上 to 常常越界到下一句里，
+    // 直接用会"点一句、读两句才停"。
+    pendingPauseAt = settings.autoPause ? effectiveCueEnd(cue) : null;
+    pendingPauseCue = settings.autoPause ? cue : null;
     lastAutoPauseTo = null;
     // 会自动停住 → 锁住这一行，避免停下瞬间实时行跳到下一句（小窗里 ▶ 与 🎤 因此对不上）
     stickyPauseCue = settings.autoPause ? cue : null;
+    // 流式播放器上 currentTime 要等 seek 落地才更新，这期间必须先停用自动暂停判定，
+    // 否则"从后面一句跳回前面一句"时会用旧位置判定为"已到句尾"→ 一按 ▶ 立刻暂停。
+    seekGuardUntil = Date.now() + 900;
     v.currentTime = cue.from;
     v.play();
-  }
-
-  function downloadAudio(cue) {
-    if (activeRecorder) { showToast('请等待上一段录音完成。'); return; }
-    if (!chrome.tabCapture) {
-      showToast('当前浏览器不支持片段录音，已改为 ▶ 跳到该行跟读。');
-      shadow(cue);
-      return;
-    }
-    const v = getVideo();
-    if (!v) return;
-    const dur = Math.max(0.8, cue.to - cue.from);
-    setStatus('正在录制该行音频（' + dur.toFixed(1) + 's）…');
-    chrome.tabCapture.capture({ audio: true, video: false }, (stream) => {
-      if (!stream) {
-        showToast('无法开始录音：浏览器未授权标签页音频捕获。可用 ▶ 跟读。');
-        return;
-      }
-      try {
-        const rec = new MediaRecorder(stream);
-        const chunks = [];
-        rec.ondataavailable = (ev) => { if (ev.data && ev.data.size) chunks.push(ev.data); };
-        rec.onstop = () => {
-          activeRecorder = null;
-          stream.getTracks().forEach((t) => t.stop());
-          const blob = new Blob(chunks, { type: rec.mimeType || 'audio/webm' });
-          if (!blob.size) {
-            showToast('录制为空：标签页音频未被捕获（浏览器/系统限制）。');
-            setStatus('该行音频录制为空。可在 Chrome/Edge 下重试，或改用 ▶ 跟读。');
-            return;
-          }
-          saveBlob(blob, 'line_' + cue.index + '.webm');
-          setStatus('已保存该行音频：line_' + cue.index + '.webm（在下载目录）');
-        };
-        activeRecorder = rec;
-        rec.start();
-        pendingPauseAt = cue.from + dur;
-        v.currentTime = cue.from;
-        v.play();
-        setTimeout(() => {
-          if (rec.state !== 'inactive') rec.stop();
-          if (!v.paused) v.pause();
-        }, dur * 1000 + 400);
-      } catch (err) {
-        showToast('录音失败：' + err);
-        activeRecorder = null;
-        stream.getTracks().forEach((t) => t.stop());
-      }
-    });
-  }
-
-  // 用 chrome.downloads 保存（比 anchor 点击更稳，且不依赖用户手势）；无 downloads 时回退到 anchor
-  function saveBlob(blob, filename) {
-    if (chrome.downloads && chrome.downloads.download) {
-      const reader = new FileReader();
-      reader.onload = () => {
-        chrome.downloads.download({ url: reader.result, filename: filename, saveAs: false }, () => {
-          if (chrome.runtime.lastError) anchorDownload(reader.result, filename);
-        });
-      };
-      reader.readAsDataURL(blob);
-    } else {
-      const url = URL.createObjectURL(blob);
-      anchorDownload(url, filename);
-      setTimeout(() => URL.revokeObjectURL(url), 4000);
-    }
-  }
-
-  function anchorDownload(url, filename) {
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a); a.click(); a.remove();
   }
 
   // ---------- 整句跟读打分 ----------
@@ -2081,32 +2079,74 @@
     return i;
   }
 
-  // 把译文写进虚拟轨道，并自动挂到「对照轨道」
+  // 分块调度：**首块刻意小**（8 行）→ 几秒内就能看到第一屏译文；之后每块 20 行。
+  // 每块译完立刻上屏一次（渐进式），所以首块越小、用户越早看到东西；后块大一些，
+  // 少几次往返、总耗时更短。返回的是 [{ start, end }]，覆盖 [0, total) 且不重不漏。
+  function planTrBatches(total) {
+    const FIRST = 8, STEP = 20;
+    const plan = [];
+    for (let p = 0; p < total; ) {
+      const end = Math.min(p + (p === 0 ? FIRST : STEP), total);
+      plan.push({ start: p, end: end });
+      p = end;
+    }
+    return plan;
+  }
+
+  // 由译文数组生成虚拟轨道的 cue 列表（空译文的行不产生 cue）。
+  // baseCues 必须是**翻译开始时的源轨道快照**：一旦用户把主轨道切成 AI 译文轨道，
+  // 全局 cues 就会变成译文本身，再拿它当基准会张冠李戴。
+  function buildTranslatedCues(texts, baseCues) {
+    const base = baseCues || cues;
+    const out = [];
+    base.forEach((c, i) => {
+      const t = String((texts[i] || '')).trim();
+      if (t) out.push({ index: i, from: c.from, to: c.to, text: t });
+    });
+    return out;
+  }
+
+  // 把译文写进虚拟轨道并立刻上屏。
+  // texts 允许是"翻到一半"的数组（未翻的行是空串）——渐进式加载就靠这个：
+  // 每译完一块就调用一次，字幕上先出现已翻好的部分，不必等全部译完。
+  // attach=false：已挂过对照轨道，只刷新正文，不重建下拉框（避免每块都重建、闪烁）。
+  async function commitTranslation(srcIdx, key, texts, attach, baseCues) {
+    const translated = buildTranslatedCues(texts, baseCues);
+    if (!translated.length) return 0;
+    trStore[srcIdx] = { key: key, tl: translateTarget, cues: translated };
+    const vIdx = ensureVirtualTrack(srcIdx);
+    if (attach !== false) {
+      // 重建下拉（带新轨道），并把已选中的两项还原回去
+      populateTrackSelect();
+      const sel = document.getElementById('ll-track');
+      if (sel && selectedTrack >= 0) sel.value = String(selectedTrack);
+      const sel2 = document.getElementById('ll-track2');
+      if (sel2) sel2.value = String(vIdx);
+      await selectTrack2(vIdx);
+    } else {
+      // 已挂上：只在"当前确实用着这条虚拟轨道"时刷新，避免覆盖用户自己选的对照轨道
+      if (selectedTrack2 === vIdx) await selectTrack2(vIdx);
+      if (selectedTrack === vIdx) {
+        cues = translated.map((c, i) => ({ index: i, from: c.from, to: c.to, text: c.text }));
+        renderList();
+      }
+    }
+    liveKey = '';
+    updateLive();
+    return translated.length;
+  }
+
+  // 把译文写进虚拟轨道，并自动挂到「对照轨道」（带状态提示，供缓存命中等一次性场景使用）
   async function applyTranslation(srcIdx, key, texts, engine, gen) {
     if (gen !== trGen) return;   // 期间切了视频 → 丢弃
-    const translated = [];
-    cues.forEach((c, i) => {
-      const t = String((texts[i] || '')).trim();
-      if (t) translated.push({ index: i, from: c.from, to: c.to, text: t });
-    });
-    if (!translated.length) {
+    const n = await commitTranslation(srcIdx, key, texts, true);
+    if (!n) {
       lastTrInfo = { ok: false, error: '翻译结果为空' };
       setStatus('翻译完成但结果为空（可能接口被限流）。可稍后点「译中文」重试，或在插件设置里换引擎。');
       return;
     }
-    trStore[srcIdx] = { key: key, tl: translateTarget, cues: translated };
-    const vIdx = ensureVirtualTrack(srcIdx);
-    // 重建下拉（带新轨道），并把已选中的两项还原回去
-    populateTrackSelect();
-    const sel = document.getElementById('ll-track');
-    if (sel && selectedTrack >= 0) sel.value = String(selectedTrack);
-    const sel2 = document.getElementById('ll-track2');
-    if (sel2) sel2.value = String(vIdx);
-    await selectTrack2(vIdx);
-    liveKey = '';
-    updateLive();
-    lastTrInfo = { ok: true, engine: engine, lines: translated.length };
-    setStatus('已生成「中文（AI 翻译）」轨道（' + translated.length + ' 行 / ' + engine + '）。已自动设为对照轨道：窗口化浮窗里原文下方叠中文；也可在主轨道下拉里选它只看中文。');
+    lastTrInfo = { ok: true, engine: engine, lines: n };
+    setStatus('已生成「中文（AI 翻译）」轨道（' + n + ' 行 / ' + engine + '）。已自动设为对照轨道：窗口化浮窗里原文下方叠中文；也可在主轨道下拉里选它只看中文。');
   }
 
   async function startTranslation(srcIdx, opts) {
@@ -2119,6 +2159,7 @@
       return;
     }
     const src = cues.map((c) => c.text);
+    const srcCues = cues.slice();      // 源轨道快照：翻译全程都拿它当时间轴基准
     // 缓存键带上引擎：换引擎（免费机翻 ↔ 大模型）后，重点「译中文」才会重新翻译
     const key = currentVideoKey() + '|' + (track ? (track.lan || '') : '') + '|' + translateTarget + '|' + trEngine + '|' + md5hex(src.join('\n'));
     const cached = await getTrCache(key);
@@ -2135,15 +2176,17 @@
     const MAX_LINES = 1500;
     const work = idxs.slice(0, MAX_LINES);
     const out = new Array(src.length).fill('');
-    const CHUNK = 40;
     let done = 0;
     let fatal = null;
+    let attached = false;                 // 是否已把虚拟轨道挂成对照轨道
     let realEngine = engineLabel();
     const notes = [];
-    setStatus('正在翻译成中文… 0/' + work.length + ' 行（' + realEngine + '）');
-    for (let p = 0; p < work.length; p += CHUNK) {
+    trProgress = { done: 0, total: work.length, ready: 0, engine: realEngine };
+    const plan = planTrBatches(work.length);
+    setStatus('正在翻译成中文… 0/' + work.length + ' 行（' + realEngine + '）译文会边翻边上屏，不用等全部完成。');
+    for (let bi = 0; bi < plan.length; bi++) {
       if (trAbort || gen !== trGen) break;
-      const slice = work.slice(p, p + CHUNK);
+      const slice = work.slice(plan[bi].start, plan[bi].end);
       const texts = slice.map((i) => src[i]);
       const res = await new Promise((resolve) => {
         try {
@@ -2162,7 +2205,13 @@
       const arr = res.results || [];
       slice.forEach((gi, k) => { out[gi] = String(arr[k] || '').trim(); });
       done += slice.length;
-      setStatus('正在翻译成中文… ' + done + '/' + work.length + ' 行（' + realEngine + '）');
+      trProgress.done = done; trProgress.engine = realEngine;
+      // —— 渐进式：这一块译完就马上上屏（第一块用 attach 建/挂轨道，之后只刷正文）——
+      if (gen === trGen) {
+        const n = await commitTranslation(srcIdx, key, out, !attached, srcCues);
+        if (n) { attached = true; trProgress.ready = n; }
+      }
+      setStatus('正在翻译成中文… ' + done + '/' + work.length + ' 行 · 已上屏 ' + trProgress.ready + ' 行（' + realEngine + '）不用等全部译完。');
       await new Promise((r) => setTimeout(r, 150));  // 免费接口，别打太猛
     }
     trRunning = false; trAbort = false;
@@ -2181,9 +2230,17 @@
       return;
     }
     if (!hitCount) { setStatus('翻译未返回任何结果。可点「译中文」重试。'); return; }
-    putTrCache(key, translateTarget, out);
+    // 只在"基本翻全"时才写缓存：半截结果一旦被缓存，下次会直接命中这半截、永远补不齐
+    if (!trAbort && hitCount >= work.length * 0.98) putTrCache(key, translateTarget, out);
+    const n = await commitTranslation(srcIdx, key, out, !attached, srcCues);
     const tail = notes.length ? '；' + notes.join('；') : '';
-    await applyTranslation(srcIdx, key, out, (fatal ? realEngine + '（部分失败）' : realEngine) + tail, gen);
+    const engLabel = (fatal ? realEngine + '（部分失败）' : realEngine) + tail;
+    trProgress.ready = n; trProgress.engine = engLabel;
+    lastTrInfo = { ok: !fatal, engine: engLabel, lines: hitCount, error: fatal || null };
+    setStatus('已生成「中文（AI 翻译）」轨道（已上屏 ' + n + ' 行' +
+      (fatal ? '／部分失败：' + fatal : '') + ' / ' + engLabel + '）' +
+      (trAbort ? '（已按「停止」保留翻好的部分）' : '') +
+      '。已自动设为对照轨道：窗口化浮窗里原文下方叠中文；也可在主轨道下拉里选它只看中文。');
   }
 
   // 自动翻译判定：开了开关 + 不是 DOM 兜底 + 当前轨道非中文 + 确实没有真中文轨道
@@ -2411,30 +2468,61 @@
     if (!v) return;
     // 用元素自身标记，而不是全局布尔：切分 P 时 B 站可能换掉 video 元素，
     // 标记在元素上既能对新元素重挂，又不会对同一元素重复挂监听。
-    if (v.__llWired) { videoWired = true; return; }
+    if (v.__llWired) { videoWired = true; wiredEl = v; return; }
     v.__llWired = true;
     videoWired = true;
+    wiredEl = v;
     // 手动拖动进度条 → 解除"停住的那一行"，实时行重新跟随播放位置。
-    // （shadow() 自己也会做一次程序化 seek，但那之后必然是一次暂停，暂停时会重新锁上，不受影响。）
-    v.addEventListener('seeked', () => { stickyPauseCue = null; });
+    // 同时丢掉旧的自动暂停目标：seek 之后要按新位置重新算"这句什么时候结束"。
+    v.addEventListener('seeked', () => {
+      stickyPauseCue = null;
+      pendingPauseAt = null; pendingPauseCue = null; lastAutoPauseTo = null;
+      seekGuardUntil = 0;          // seek 落地，解除"别信 currentTime"的保护期
+    });
     v.addEventListener('timeupdate', () => {
-      if (pendingPauseAt != null && v.currentTime >= pendingPauseAt) {
-        const at = pendingPauseAt;
-        v.pause(); pendingPauseAt = null; lastAutoPauseTo = null;
-        // 记住"刚停在哪一句"：t 会正好压在「上一句 to == 下一句 from」的边界上，
-        // 不锁住的话实时行（和它的 ▶ / 🎤）会立刻滑到还没播的下一句。
-        stickyPauseCue = cues.find((c) => Math.abs(c.to - at) < 0.05) || stickyPauseCue;
-      }
+      autoPauseTick();
       // 恢复播放就解除锁定：否则"停在一句 → 继续播 → 手动暂停"时会一直显示上一句。
-      // 之后每一次自动暂停都会按 pendingPauseAt 重新锁定，不受影响。
       if (!v.paused) stickyPauseCue = null;
       updateHighlight();
       updateLive();
-      if (settings.autoPause && !v.paused && cues.length) {
-        const cur = currentCursorCue();
-        if (cur && cur.to !== lastAutoPauseTo) { pendingPauseAt = cur.to; lastAutoPauseTo = cur.to; }
-      }
     });
+  }
+
+  // 视频元素可能在初始化时还不存在、也可能被 SPA 换掉：定时自愈重挂（wireVideo 有 __llWired 去重，很便宜）
+  function ensureVideoWired() {
+    const v = getVideo();
+    if (!v) return;
+    if (v !== wiredEl || !videoWired) { try { wireVideo(); } catch (e) { log('wireVideo 重挂失败', e); } }
+  }
+
+  // 自动暂停：播到「当前这一句结束」就停住。
+  // 关键设计——**目标只武装一次**（pendingPauseAt == null 时才取），播放过程中绝不跟着时间轴把目标往后再推。
+  // 原因：YouTube 自动生成字幕常把同一句拆成多条、且 to 逐条往后延伸，若每帧都用"当前行的 to"重设目标，
+  // 目标会被一直往前推、永远追不上 → 表现就是「暂停已打开但从不暂停」。
+  // 独立于 timeupdate（由 150ms 定时器兜底），所以即便 video 元素换过、timeupdate 没挂上，自动暂停依然生效。
+  function autoPauseTick() {
+    if (!settings.autoPause || activeRecorder) return;
+    const v = getVideo();
+    if (!v || v.paused || !cues.length) return;
+    if (Date.now() < seekGuardUntil) return;   // 刚发出 seek：currentTime 还是旧值，不能用来判定
+    if (pendingPauseAt == null) {
+      const cur = currentCursorCue();
+      // 只接受"还没到"的目标：位置已在目标之后（seek 未落地 / 拖到句尾）就不武装，
+      // 否则会一武装就被判定到达，立刻暂停。
+      const end = cur ? effectiveCueEnd(cur) : 0;
+      if (cur && end > v.currentTime + 0.05) { pendingPauseAt = end; pendingPauseCue = cur; lastAutoPauseTo = end; }
+      return;
+    }
+    if (v.currentTime < pendingPauseAt - 0.03) return;
+    const at = pendingPauseAt;
+    const wasCue = pendingPauseCue;
+    pendingPauseAt = null; pendingPauseCue = null; lastAutoPauseTo = null;
+    // 记住"刚停在哪一句"：锁住那一行，否则实时行（连同它的 ▶ / 🎤）会立刻滑到还没播的下一句。
+    // 直接用在武装时记下的那一行——暂停点可能被"下一句起点"裁剪过，按时间反查会失手。
+    stickyPauseCue = (wasCue && cues[wasCue.index] === wasCue) ? wasCue
+      : (cues.find((c) => Math.abs(c.to - at) < 0.05) || null);
+    autoPauseInfo = { at: at, idx: stickyPauseCue ? stickyPauseCue.index : -1, when: Date.now() };
+    try { v.pause(); } catch (e) {}
   }
 
   // ---------- 调试诊断（供排错用） ----------
@@ -2563,10 +2651,41 @@
       : '未生成') + (trRunning ? '（正在翻译…）' : ''));
     if (lastTrInfo) {
       lines.push('上次翻译: ' + (lastTrInfo.ok ? ('成功，' + lastTrInfo.engine + '，' + (lastTrInfo.lines || 0) + ' 行') : ('失败：' + lastTrInfo.error)));
+    }
+    if (trProgress) {
+      lines.push('渐进式翻译: 已完成 ' + trProgress.done + '/' + trProgress.total + ' 行，已上屏 ' + trProgress.ready + ' 行（' +
+        (trRunning && trProgress.done < trProgress.total ? '翻译中…' : '已结束') + '）');
     } else {
       lines.push('上次翻译: 无（未触发）');
     }
     lines.push('已加载字幕行数: ' + cues.length);
+    // 自动暂停体检：这三行能直接区分「开关没生效 / 事件没挂上 / 目标被一直往前推」三种失败
+    lines.push('video 事件已挂: ' + (videoWired ? '是' : '否（timeupdate 不来 → 高亮/实时行/自动暂停都会失灵）') +
+      (wiredEl ? '，已挂元素当前时间 ' + (wiredEl.currentTime || 0).toFixed(1) + 's' : ''));
+    lines.push('自动暂停: ' + (settings.autoPause ? '开' : '关') +
+      '，目标: ' + (pendingPauseAt != null ? pendingPauseAt.toFixed(1) + 's' +
+        (pendingPauseCue ? '（第 ' + pendingPauseCue.index + ' 行，原始到 ' + pendingPauseCue.to.toFixed(1) + 's）' : '') : '（未武装）') +
+      (autoPauseInfo ? '，上次自动暂停于 ' + autoPauseInfo.at.toFixed(1) + 's（第 ' + autoPauseInfo.idx + ' 行）' : '，本次尚未自动暂停过'));
+    // 字幕时间轴体检：重叠处很多 → 说明是"同一句拆成多条、to 逐条往后推"的滚动式轨道
+    // （这种轨道若按"当前行的 to"每帧重设暂停目标，目标会被一直推后 → 永远不暂停）
+    try {
+      let overlap = 0, minDur = Infinity, maxDur = 0;
+      for (let i = 0; i < cues.length; i++) {
+        const d = cues[i].to - cues[i].from;
+        if (d < minDur) minDur = d;
+        if (d > maxDur) maxDur = d;
+        if (i + 1 < cues.length && cues[i + 1].from < cues[i].to - 0.05) overlap++;
+      }
+      lines.push('字幕时间轴: 共 ' + cues.length + ' 行，行时长 ' +
+        (isFinite(minDur) ? minDur.toFixed(1) : '-') + '~' + maxDur.toFixed(1) + 's，重叠 ' + overlap + ' 处');
+      // 被"下一句起点"裁剪过的行数：>0 说明 ASR 的 to 会越界到下一句里（点一句读两句的根因）
+      lines.push('自动暂停裁剪: ' + countTrimmedCues(cues) + ' 行的结束点被下一句起点收紧（>0 属正常，ASR 轨道常见）');
+      const sample = (a, b) => cues.slice(a, b).map((c) =>
+        '[' + c.index + '] ' + c.from.toFixed(1) + '→' + c.to.toFixed(1) +
+        '（实播到 ' + effectiveCueEnd(c, cues).toFixed(1) + '） ' + JSON.stringify(c.text.slice(0, 20))).join(' | ');
+      lines.push('前 3 行: ' + (sample(0, 3) || '（无）'));
+      lines.push('末 3 行: ' + (sample(Math.max(0, cues.length - 3), cues.length) || '（无）'));
+    } catch (e) { lines.push('字幕时间轴体检失败: ' + e.message); }
     if (lastSelectError) lines.push('字幕正文下载错误: ' + lastSelectError);
     if (currentSite !== 'youtube') {
       lines.push('—— 字幕 API 原始响应（定位“code=0 但列表空”） ——');
@@ -2699,8 +2818,11 @@
   function applySettings(r) {
     try {
       const prevDict = dictSource;
+      const prevAutoPause = settings.autoPause;
       settings.enabled = r.enabled !== false;
       settings.autoPause = !!r.autoPause;
+      // 自动暂停开关变化（如从设置页改的）→ 丢掉旧目标，按当前播放位置重新武装
+      if (prevAutoPause !== settings.autoPause) { pendingPauseAt = null; pendingPauseCue = null; lastAutoPauseTo = null; }
       settings.dictSource = r.dictSource || 'api';
       settings.eudicAction = r.eudicAction || 'lp-dict';
       dictSource = settings.dictSource;
@@ -2741,11 +2863,11 @@
     try { if (observer) { observer.disconnect(); observer = null; } } catch (e) {}
     observedEl = null; lastText = '';
     // 换视频：让在飞的翻译作废（trGen 变化 → 结果被丢弃），并清空译文缓存引用
-    trGen++; trAbort = true; trRunning = false; trStore = {}; lastTrInfo = null;
+    trGen++; trAbort = true; trRunning = false; trStore = {}; lastTrInfo = null; trProgress = null;
     try { setTrButton(false); } catch (e) {}
     cues = []; cues2 = []; subtitleTracks = []; selectedTrack = -1; selectedTrack2 = -1; liveKey = '';
     dataReady = false; loadFailed = false; usingDomFallback = false;
-    pendingPauseAt = null; lastAutoPauseTo = null; stickyPauseCue = null;
+    pendingPauseAt = null; pendingPauseCue = null; lastAutoPauseTo = null; stickyPauseCue = null; seekGuardUntil = 0;
     playParams = null; bvid = null; cid = null; isBangumi = false; ytLastVideoId = null;
     lastApiCode = null; lastApiRaw = null; lastSelectError = null; lastYtRaw = null; pendingYtBody = null;
     videoWired = false;
@@ -2798,6 +2920,11 @@
     try { chrome.storage.onChanged.addListener((changes, area) => { if (area === 'sync') syncSettings(); }); } catch (e) {}
     try { setInterval(syncSettings, 2000); } catch (e) {}
     try { watchSpaNav(); } catch (e) { log('watchSpaNav 失败', e); }
+    // 自愈：video 元素可能晚于内容脚本出现（YouTube 播放器是 JS 动态建的）或被 SPA 换掉，
+    // 不重挂的话 timeupdate 永远不来，高亮 / 实时行 / 自动暂停会一起静默失效。
+    try { setInterval(ensureVideoWired, 1000); } catch (e) {}
+    // 自动暂停的兜底时钟：不再只依赖 timeupdate，没挂上事件时也能按时停住
+    try { setInterval(autoPauseTick, 150); } catch (e) {}
   }
 
   if (document.readyState === 'loading') {

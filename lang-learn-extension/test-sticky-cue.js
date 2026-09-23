@@ -70,9 +70,12 @@ function has(label, hay, needle) {
   if (hay.indexOf(needle) >= 0) { pass++; console.log('  ✓ ' + label); }
   else { fail++; console.log('  ✗ ' + label + '：源码里找不到 ' + JSON.stringify(needle)); }
 }
-has('暂停时把「刚停的那一句」重新锁上', contentJs, 'stickyPauseCue = cues.find((c) => Math.abs(c.to - at) < 0.05)');
+has('暂停时把「刚停的那一句」重新锁上（优先用武装时记下的那一行）', contentJs,
+  'stickyPauseCue = (wasCue && cues[wasCue.index] === wasCue) ? wasCue');
 has('恢复播放时解除锁定', contentJs, 'if (!v.paused) stickyPauseCue = null;');
-has('拖动进度条时解除锁定', contentJs, "v.addEventListener('seeked', () => { stickyPauseCue = null; })");
+has('拖动进度条时解除锁定', contentJs, "v.addEventListener('seeked', () => {");
+has('拖动进度条时解除锁定并重新武装自动暂停目标', contentJs, 'stickyPauseCue = null;\n      pendingPauseAt = null; pendingPauseCue = null; lastAutoPauseTo = null;');
+has('拖动落地后解除 seek 保护期', contentJs, 'seekGuardUntil = 0;          // seek 落地');
 has('点句复读会锁住该句', contentJs, 'stickyPauseCue = settings.autoPause ? cue : null;');
 has('换字幕时丢弃失效的锁定对象', contentJs, 'stickyPauseCue = null;   // 字幕换了，旧的"锁住行"对象作废');
 

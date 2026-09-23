@@ -3,7 +3,7 @@
 > Turn **Bilibili / YouTube** videos into study material: a clickable subtitle list, shadowing, word lookup, vocabulary notebook, spaced-repetition review, and an offline dictionary.
 > All data stays in your browser (`chrome.storage.local`) — **no login, no account, nothing uploaded**.
 
-**Version v0.7.34** · MV3 · Chrome / Edge / Quark / Kiwi · MIT License
+**Version v0.7.36** · MV3 · Chrome / Edge / Quark / Kiwi · MIT License
 
 [**English**](#-english) · [**中文**](#-中文)
 
@@ -19,11 +19,12 @@ The hard part of learning from foreign-language videos isn't *seeing* subtitles 
 - **Sentence-by-sentence subtitle list** on the right, with the current line auto-highlighted and auto-scrolled.
 - **Multi-track selection** — lists all CC tracks (English / 中文 / 日本語 …) and auto-selects a **non-Chinese track** by default (learn from the original).
 - **Dual subtitles** — show a primary track plus a secondary track simultaneously (e.g. English original + Chinese translation).
-- **Click a line to shadow (▶)** — jumps to that line and plays it. Whether it **auto-pauses at the end of the line follows the "Pause" toggle**: off = keep playing continuously, on = stop after that one line.
+- **Click a line to shadow (▶)** — jumps to that line and plays it. Whether it **auto-pauses at the end of the line follows the "Pause" toggle**: off = keep playing continuously, on = stop after that one line. ASR caption segmentation often disagrees with what your ear calls "one sentence" (`to` bleeding into the next line, or one sentence split into rolling events), so the stop point is **clamped to where the next line actually starts** — one click plays one line, not two.
 - **AI translation track (new)** — when a video has only an original-language CC track and no track in your **native language**, the whole track is translated into your native language and added as a **new "（AI 翻译）" track**. It shows up in the dropdown like a native track: selectable as the primary track, and auto-assigned as the secondary (dual-subtitle) track. The **"译中文"** button (label follows your native language) triggers it manually and stops a run in progress.
 - **Three interchangeable translation engines** — **LLM API** (DeepSeek / SiliconFlow / Zhipu GLM / Moonshot / Qwen / OpenAI…, best quality, bring your own key) → **free Google endpoint** → **MyMemory** (usually reachable from mainland China). Default "auto" relays through them in order: if the LLM gets rate-limited halfway, the free engines fill the remaining lines so the track never has gaps. See the Chinese section「大模型翻译接口怎么填」for how to fill in base URL / model / key.
+- **Progressive translation (translated lines appear as they arrive)** — a 200+ line video no longer sits blank for a minute. Lines are translated in **batches (the first batch is only 8 lines, so results show up almost immediately; 20 lines after that)**, and **after every batch the partial result is written into the translation track and re-rendered**, so Chinese lines keep flowing into the floating window. The status bar shows "N/M lines · K on screen", and hitting **Stop** keeps whatever has already been translated. Results are only **cached when essentially complete** (a half-translated cache would otherwise be hit forever and never finish).
 - **Live subtitle row** — shows the current line, and every word in it is **clickable**.
-- **Shadow & AI pronunciation scoring (🎤)** — the old per-line ⬇ download is replaced by a 🎤 button. Click it to record your read-aloud of that line via the **microphone** (mic audio only, not the tab), click ■ to stop. The browser's **speech recognition** transcribes what you said, we score **word-level similarity** against the original line, and if you've configured an **LLM** it also returns a **0–100 score with Chinese improvement tips**. Replay buttons let you compare your take with the original and re-record.
+- **Shadowing score (🎤)** — click 🎤 to record your read-aloud of that line through the **microphone** (mic audio only, not the tab), click ■ to stop. The browser's **speech recognition** transcribes what you said and we score **word-level similarity** against the original line (green ≥80 / amber ≥60 / red <60), with **replay your take / the original** and re-record. Available both on list rows and on the floating window's live row (hide it with the 🎤 toggle in the title bar).
 
 ### Lookup & dictionaries
 - **Click a word to look it up, double-click to save it** — works on both the subtitle list and the floating window's live row, sharing one code path.
@@ -118,6 +119,10 @@ Self-contained Node tests (no dependencies):
 | `test-yt-fmt.js` | YouTube subtitle body parsing for JSON3 / VTT / XML |
 | `test-yt-bridge.js` | MAIN-world bridge: track forwarding, videoId validation, handshake resend, request interception |
 | `test-css-structure.js` | CSS structural audit (brace balance, dangling commas, empty rules) |
+| `test-sticky-cue.js` | Cue boundary: while paused on `prev.to == next.from` the just-heard line stays locked (▶ and 🎤 must target the same line) |
+| `test-autopause.js` | Auto-pause state machine: arms once, pauses at line end, survives "rolling" ASR captions whose `to` keeps extending, refuses expired targets, seek guard, and clamps the stop point to the next line's start ("one line plays two sentences") |
+| `test-progressive-tr.js` | Progressive translation: batch schedule (small first batch, gapless coverage), partial-text → partial track, per-batch screen update contract, no caching of half-done results |
+| `test-pron-score.js` | Shadowing score: word-level F1 similarity, edit-distance ≤1 tolerance, colour thresholds |
 | `test-translate.js` | AI track: batch chunking, gtx parsing, fallback to per-line when counts mismatch, MyMemory fallback, virtual-track selection & body retrieval, LLM endpoint normalization |
 | `test-translate-flow.js` | (needs `npm i jsdom`) end-to-end run of `content.js`: auto-translate → build translated track → assign as secondary → switch primary track |
 
@@ -125,12 +130,18 @@ Self-contained Node tests (no dependencies):
 node test-parse.js
 node test-lemma.js
 node test-translate.js
+node test-autopause.js
+node test-progressive-tr.js
+node test-sticky-cue.js
+node test-live-words.js
 # end-to-end (optional dependency)
 npm i jsdom && node test-translate-flow.js && node test-translate-flow.js has-zh
 ```
 
 ## Version highlights (selected)
 
+- **v0.7.36** **Stop at the right line, and translated lines stream in.** ① *"One line plays two sentences"*: ASR caption segmentation doesn't match what your ear hears — a cue's `to` often extends into the next sentence (or the same sentence is split into overlapping rolling events). The auto-pause stop point is now **clamped to where the next distinct line starts** (`effectiveCueEnd`), so replaying one line stops at that line; ordinary CC (where `next.from == cur.to`) is mathematically unchanged. Because the clamp can land the pause between two cues' `to` values, the "just-heard line is locked" state now uses the row recorded when the target was armed instead of a ±0.05s lookup. ② *Progressive translation*: translation is now chunked (first batch **8 lines**, then 20), and **every batch is written to the translation track and re-rendered immediately**, so Chinese appears in the floating window within seconds instead of after the whole 200+ line job; the status bar shows lines done / on screen, Stop keeps the partial result, and only a nearly-complete result is cached. Also removed the dead `tabCapture` / `downloads` audio-download code and its permissions, and the diagnostic report now shows the clamped play-end per line plus progressive-translation progress.
+- **v0.7.35** **Auto-pause actually pauses now.** Two root causes, both fixed: ① auto-pause lived inside the `timeupdate` callback, but YouTube builds its `<video>` element with JS (and swaps it on SPA navigation) — if the element didn't exist when the content script booted, the listener was never attached and auto-pause, highlighting and the live line all failed silently; there's now a 1s self-healing re-attach plus a dedicated 150ms timer that drives auto-pause independently of `timeupdate`. ② The target was re-armed from "the current line's end" on every tick, but YouTube's auto-generated captions often split one sentence into several events whose `to` keeps extending — so the target kept sliding forward and was never reached (measured: target at 8.9s while playback sat at 6.0s → never paused). The target is now armed **once** and never pushed later. Also: a 0.9s guard after a programmatic seek prevents "press ▶ and it pauses instantly", and the diagnostic report now shows whether video events are attached, the auto-pause state/target/last pause, and subtitle-timeline overlap stats.
 - **v0.7.34** **Fixes & polish** — the 🎤 button now reliably sits at the **end of the subtitle line** (the text item used `flex-basis: auto`, whose max-content width pushed the button onto a new row; now `flex-basis: 0`). The **"Back to subtitle list"** button is now readable (it reused a white-on-transparent style meant for the dark title bar, so it was white-on-white and effectively invisible). With auto-pause on, the live line **no longer jumps to the next cue while paused** (caption boundaries are shared, so at `t == prev.to` the cursor used to slide forward — now the line you just heard is locked until you play or seek, which is what made ▶ play one line while 🎤 targeted the next). The small-window shadowing buttons are now **hideable** via the 🎤 toggle in the title bar (choice is remembered).
 - **v0.7.33** **Inline 🎤 button + shadowing in the small window** — the record button now sits at the **end of the subtitle line** (right after the last word, no longer on its own row). The **windowed/floating mode** also gets a ▶ play + 🎤 record pair under the live line, so you can do read-aloud scoring without the list. Live updates freeze while recording so the result panel isn't wiped mid-take.
 - **v0.7.32** **Instant scoring** — dropped the slow LLM-only scoring; only the local word-level similarity score remains (speech recognition + word matching, score appears the moment you stop). The bottom hint no longer mentions the removed download button, and the diagnostic message now points at the **"Back to subtitle list" button at the top and bottom of the report** (both are always visible) instead of the confusing "←".
@@ -177,9 +188,10 @@ Released under the [MIT License](LICENSE).
 - **双语叠显**：主轨道 + 对照轨道同时显示，可单独指定第二条轨道（如"英文原文 + 中文对照"）。
 - **AI 译文轨道**：CC 只有原文、没有「母语」轨道时，自动把整条字幕翻译成**你的母语**，**生成一条新的「（AI 翻译）」轨道**——它跟原生轨道一样出现在下拉里，可选为主轨道（列表全母语），默认自动挂到「对照」位（窗口化浮窗里原文下方叠一行母语译文）。按钮文案「译中文」也会跟随母语变化。也可点面板上的 **「译中文」** 手动触发 / 中途停止。
 - **翻译引擎三选一**：**大模型 API**（DeepSeek / 硅基流动 / 智谱 / Kimi / 通义 / OpenAI…，质量最好）→ **Google 免费端点** → **MyMemory**（国内通常可达）。默认「自动」按这个顺序接力：大模型限流只译出一半时，剩下的自动由免费接口补上，轨道不会缺行。
-- **点击跟读（▶）**：跳转到该句开头播放；**点句是否自动暂停，跟随「暂停」开关**——开关关着就连续播放、开着就放完这一句停下。
+- **译文边翻边上屏（渐进式）**：200 多行的长视频不再"点完等一分多钟什么都看不到"——插件按块翻译（**首块只有 8 行**，几乎立刻出结果；之后每块 20 行），**每译完一块就把已有译文写进译文轨道并刷新**，窗口化浮窗里中文一行行往外冒。状态栏实时显示「已翻 N/M 行 · 已上屏 K 行」，中途点「停止」会保留已经翻好的部分。只有**基本翻全**时才会把结果写进缓存（否则半截结果会被缓存、下次永远补不齐）。
+- **点击跟读（▶）**：跳转到该句开头播放；**点句是否自动暂停，跟随「暂停」开关**——开关关着就连续播放、开着就放完这一句停下。ASR 字幕的分段常与"人耳听到的句子"不一致（`to` 越界到下一句、或同句被拆成多条滚动事件），插件会把停止点**收紧到下一句真正开始的地方**，所以是"点一句、停一句"，不会读两句才停。
 - **实时字幕行**：显示当前时间点对应的字幕，**逐词可点**。
-- **下载该句音频（⬇）**：用 `tabCapture` 录下那几秒标签页音频，存为 `line_N.webm`。
+- **跟读录音打分（🎤）**：点 🎤 用麦克风录下你跟读这一句（**只录人声，不录视频声**），点 ■ 停止；浏览器语音识别把你的话转成文字，先给**逐词相似度**基础分（绿≥80 / 橙≥60 / 红<60），可回放「我的录音 / 原句」再读一遍。列表行和窗口化小窗的实时行都能用（小窗里的按钮可用标题栏 🎤 开关隐藏）。
 
 ### 查词与词典
 - **点单词查释义，双击存生词**——字幕列表和浮窗那行字都能点，共用同一套逻辑。
@@ -315,6 +327,10 @@ lang-learn-extension/
 | `test-yt-fmt.js` | YouTube 字幕正文三格式（JSON3 / VTT / XML）解析 |
 | `test-yt-bridge.js` | 主世界桥接：轨道转发、videoId 校验、握手重发、请求截获 |
 | `test-css-structure.js` | CSS 结构体检（括号配平、悬挂逗号、空规则） |
+| `test-sticky-cue.js` | 句边界锁行：暂停在「上一句 to == 下一句 from」上时，刚听完的那句保持锁定（▶ 与 🎤 必须指向同一句） |
+| `test-autopause.js` | 自动暂停状态机：目标只武装一次、播到句尾停住、能扛住"滚动式 ASR 字幕（to 一直往后延伸）"、拒绝过期目标、seek 保护期、并把停止点收紧到下一句起点（修「点一句读两句才停」） |
+| `test-progressive-tr.js` | 渐进式翻译：分块调度（首块小、不重不漏）、半截译文只上屏已译行、逐块上屏的流式契约、半截结果不写缓存 |
+| `test-pron-score.js` | 跟读打分：逐词 F1 相似度、编辑距离 ≤1 容错、颜色分级阈值 |
 | `test-translate.js` | AI 译文轨道：批量分组、gtx 解析、条数不符降级逐条、MyMemory 回退、虚拟轨道挑选与取正文 |
 | `test-translate-flow.js` | （需 `npm i jsdom`）端到端跑 `content.js`：自动翻译 → 生成译文轨道 → 挂对照位 → 切主轨道 |
 | `test-fullscreen.js` | （需 `npm i jsdom`）全屏浮窗：进全屏改挂到全屏容器、自动切浮窗、退出还原；`<video>` 全屏的换容器补救 |
@@ -323,12 +339,18 @@ lang-learn-extension/
 node test-parse.js
 node test-lemma.js
 node test-translate.js
+node test-autopause.js
+node test-progressive-tr.js
+node test-sticky-cue.js
+node test-live-words.js
 # 端到端（可选依赖）
 npm i jsdom && node test-translate-flow.js && node test-translate-flow.js has-zh && node test-fullscreen.js
 ```
 
 ## 主要版本历程（节选）
 
+- **v0.7.36** **停在正确的一行 + 译文边翻边上屏。** ①「点一句、读两句才停」：ASR 字幕的分段和人耳听到的句子并不一致——某行的 `to` 常常越界到下一句里（也可能是同一句被拆成多条互相重叠的滚动事件）。现在自动暂停的停止点会**收紧到"下一句真正开始的地方"**（`effectiveCueEnd`），复读一行就停在这一行；普通 CC（下一行 `from == 本行 to`）算法上完全不变。「刚听完的那一行要锁住」也改成直接用武装目标时记下的那一行——因为收紧后暂停点可能落在两条 cue 的 `to` 之间，按时间反查会失手。②**渐进式翻译**：翻译改成**分块**（首块只 **8 行**，之后每块 20 行），**每译完一块立刻写进译文轨道并刷新**，中文几秒内就开始在浮窗里往外冒，不用等 200 多行全部译完；状态栏显示「已翻 N/M · 已上屏 K」，中途点「停止」保留已翻部分，且**只在基本翻全时才写缓存**。另外删掉了已废弃的 `tabCapture` / `downloads` 单句音频下载代码及其权限；诊断报告新增「每行的实播结束点」与「渐进式翻译进度」。
+- **v0.7.35** **自动暂停真的会暂停了。** 两个根因一起修：① 自动暂停原来写在 `timeupdate` 回调里，而 YouTube 的 `<video>` 是 JS 动态建立的（SPA 换视频还会换元素）——内容脚本启动时元素还不存在的话，监听就永远没挂上，自动暂停连同高亮、实时行一起静默失效；现在加了 1s 自愈重挂，并用一个独立的 150ms 时钟驱动自动暂停，不再依赖 `timeupdate`。② 原来每帧都用「当前行的 to」重设目标，而 YouTube 自动生成字幕常把同一句拆成多条、`to` 逐条往后延伸，目标于是被一直往前推、永远追不上（实测：时间才走到 6.0s，目标已被推到 8.9s → 从不暂停）；现在目标**只武装一次**，播放过程中绝不再往后推。另外：程序化跳转后有 0.9s 保护期，避免"一按 ▶ 就立刻暂停"；诊断报告新增「video 事件是否挂上 / 自动暂停状态·当前目标·上次暂停于 / 字幕时间轴重叠统计」三项体检。
 - **v0.7.34** **三处修好**：① 🎤 稳定贴在**字幕行末尾**（文字项原来是 `flex-basis: auto`，它的 max-content 宽度会把按钮挤到下一行，改成 `flex-basis: 0`）；② 诊断页的「返回字幕列表」按钮**能看见了**（它复用了给深色标题栏写的白字半透明白底样式，落在浅色区就白字白底）；③ 开着自动暂停时，**停住后实时行不再滑到下一句**（字幕首尾相接，`t` 恰好等于上一句的 to 时会取到下一句——也就是"点播放是这句、点录音变下一句"的原因；现在会把刚听完的那一句锁住，播放或拖进度条后解锁）。小窗里的跟读按钮也**可以隐藏**了：标题栏的 🎤 开关，选择会被记住。
 - **v0.7.33** **录音键回到段尾 + 小窗也能跟读**：🎤 按钮不再另起一行，改为贴在**该行字幕末尾右侧**（跟着最后一行文字）。**窗口化小窗模式**下实时字幕行下方也补了 ▶ 播放 + 🎤 录音按钮，列表被隐藏时照样能做跟读打分；录音期间冻结实时行刷新，避免结果面板被冲掉。
 - **v0.7.32** **跟读打分秒出**：移除较慢的大模型单独打分，只保留本地逐词相似度（语音识别 + 逐词比对，停止录音立即出分）。底部提示文字不再提及已移除的下载按钮；诊断完成的提示改为明确指向报告**顶部/底部的「返回字幕列表」按钮**（各放一个，滚到哪都能看到），不再用容易误解的「←」。

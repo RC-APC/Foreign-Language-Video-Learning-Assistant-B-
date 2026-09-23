@@ -80,7 +80,8 @@ const sandbox = { console, document: documentStub, Promise, Math, Date, JSON, Re
 sandbox.globalThis = sandbox;
 vm.createContext(sandbox);
 
-vm.runInContext('var cues = []; var cues2 = []; var liveKey = "";', sandbox);
+vm.runInContext('var cues = []; var cues2 = []; var liveKey = ""; var activeRecorder = null; var panel = null; var liveShadowTools = true;' +
+  ' var subtitleTracks = []; var selectedTrack2 = -1;', sandbox);
 vm.runInContext(`
   function cursorCueFrom(arr) {
     var cur = null;
@@ -189,6 +190,39 @@ sandbox.cues = C1; sandbox.cues2 = []; vm.runInContext('cues = __c1; cues2 = [];
 vm.runInContext('__now = -5;', sandbox);   // 时间在首条字幕之前
 run();
 check('当前时间无对应字幕行时给出提示', /当前无字幕行/.test(liveEl.textContent));
+
+// 6) 小窗（窗口化浮窗）模式：实时行下方要补出 ▶ / 🎤 跟读工具，且受开关控制
+liveKeyReset();
+vm.runInContext('__now = 1; cues = __c1; cues2 = []; liveKey = "";' +
+  'panel = { classList: { contains: function (c) { return c === "ll-windowed"; } } }; liveShadowTools = true;', sandbox);
+run();
+const tools = find(liveEl, 'll-live-tools');
+check('小窗模式下实时行补出跟读工具条', !!tools);
+check('工具条里有 ▶ 播放与 🎤 录音', !!find(tools || liveEl, 'll-play') && !!find(tools || liveEl, 'll-rec'));
+check('工具条下方有结果区 .ll-rec-result', !!find(liveEl, 'll-rec-result'));
+liveKeyReset();
+vm.runInContext('liveKey = ""; liveShadowTools = false;', sandbox);
+run();
+check('关掉开关后小窗不再有跟读工具（只剩一行干净字幕）', !find(liveEl, 'll-live-tools'));
+vm.runInContext('panel = null; liveShadowTools = true;', sandbox);
+
+// 7) 渐进式翻译：AI 译文轨道只翻到前几行时，绝不能把"上一条已翻的行"挂到当前原文下面
+//    （否则视频播到第 100 行，浮窗下面挂的却是第 8 行的旧译文）
+liveKeyReset();
+vm.runInContext('__now = 5; cues = __c1; cues2 = [{ index: 0, from: 0, to: 4, text: "我很好，谢谢。" }];' +
+  ' subtitleTracks = [{ lan_doc: "中文（AI 翻译）", _virtual: true }]; selectedTrack2 = 0;', sandbox);
+run();
+check('虚拟译文轨没覆盖当前行 → 不挂译文行（防张冠李戴）', !find(liveEl, 'll-live-sub'));
+liveKeyReset();
+vm.runInContext('__now = 1;', sandbox);
+run();
+check('虚拟译文轨覆盖当前行 → 正常挂译文行', !!find(liveEl, 'll-live-sub'));
+// 真实双语轨道（非虚拟）时间轴可以有自己的偏移，不去校验，照旧显示
+liveKeyReset();
+vm.runInContext('__now = 5; subtitleTracks = [{ lan_doc: "中文", _virtual: false }];', sandbox);
+run();
+check('真实双语轨道不做时间轴校验（照旧显示）', !!find(liveEl, 'll-live-sub'));
+vm.runInContext('subtitleTracks = []; selectedTrack2 = -1;', sandbox);
 
 const failed = results.filter((r) => !r.ok);
 console.log('\n结果: ' + (results.length - failed.length) + '/' + results.length + ' PASS ' + (failed.length ? '❌' : '✅'));
