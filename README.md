@@ -3,7 +3,7 @@
 > Turn **Bilibili / YouTube** videos into study material: a clickable subtitle list, shadowing, word lookup, vocabulary notebook, spaced-repetition review, and an offline dictionary.
 > All data stays in your browser (`chrome.storage.local`) — **no login, no account, nothing uploaded**.
 
-**Version v0.7.25** · MV3 · Chrome / Edge / Quark / Kiwi · MIT License
+**Version v0.7.30** · MV3 · Chrome / Edge / Quark / Kiwi · MIT License
 
 [**English**](#-english) · [**中文**](#-中文)
 
@@ -20,6 +20,8 @@ The hard part of learning from foreign-language videos isn't *seeing* subtitles 
 - **Multi-track selection** — lists all CC tracks (English / 中文 / 日本語 …) and auto-selects a **non-Chinese track** by default (learn from the original).
 - **Dual subtitles** — show a primary track plus a secondary track simultaneously (e.g. English original + Chinese translation).
 - **Click a line to shadow (▶)** — jumps to that line and plays it. Whether it **auto-pauses at the end of the line follows the "Pause" toggle**: off = keep playing continuously, on = stop after that one line.
+- **AI translation track (new)** — when a video has only an original-language CC track and no track in your **native language**, the whole track is translated into your native language and added as a **new "（AI 翻译）" track**. It shows up in the dropdown like a native track: selectable as the primary track, and auto-assigned as the secondary (dual-subtitle) track. The **"译中文"** button (label follows your native language) triggers it manually and stops a run in progress.
+- **Three interchangeable translation engines** — **LLM API** (DeepSeek / SiliconFlow / Zhipu GLM / Moonshot / Qwen / OpenAI…, best quality, bring your own key) → **free Google endpoint** → **MyMemory** (usually reachable from mainland China). Default "auto" relays through them in order: if the LLM gets rate-limited halfway, the free engines fill the remaining lines so the track never has gaps. See the Chinese section「大模型翻译接口怎么填」for how to fill in base URL / model / key.
 - **Live subtitle row** — shows the current line, and every word in it is **clickable**.
 - **Download the line's audio (⬇)** — captures a few seconds of tab audio via `tabCapture` into `line_N.webm`.
 
@@ -28,7 +30,8 @@ The hard part of learning from foreign-language videos isn't *seeing* subtitles 
 - Dictionary source is configurable:
   - **Local dictionary (highest priority by default)** — returns instantly and **fully offline** when the word is in an imported dictionary;
   - **Online** — `dictionaryapi.dev`, falling back to Wiktionary;
-  - **Eudic (local app)** — opens the native Eudic app via the `eudic://` URL scheme (supports Japanese and many other languages).
+  - **Eudic (local app)** — opens the native Eudic app via the `eudic://` URL scheme (supports Japanese and many other languages);
+  - **LLM (best)** — asks your configured LLM (with the sentence as context) for part-of-speech / meaning / usage / example, and **auto-fills the translation into the saved-word note on double-click**.
 - **Import dictionary files directly** — plain-text dictionaries (one word per line, followed by `n./v./a./ad./abbr.`-prefixed definitions), plus `word<TAB|space|colon>definition` and JSON. **GBK / UTF-8 auto-detection**, "clear before import" to replace the whole book, and one-click clear.
 
 ### Vocabulary notebook & review
@@ -41,6 +44,7 @@ The hard part of learning from foreign-language videos isn't *seeing* subtitles 
 
 ### Interface
 - **Floating window (▢)** — collapses the panel to a small window showing only the current subtitle line (or two, for dual subtitles). It's **draggable (mouse + touch)** and **word-clickable** — great for minimal shadowing in the corner.
+- **Works in real fullscreen** — entering fullscreen temporarily re-parents the panel into the fullscreen element (otherwise the browser paints nothing outside it), auto-switches it to floating mode, and puts it back where it was when you exit.
 - **Minimize (–)** — collapses the whole panel into a title bar.
 - **Diagnostics** — dumps page structure / subtitle source / fetch details; hit **"Copy report"** to paste into a bug report.
 
@@ -114,15 +118,23 @@ Self-contained Node tests (no dependencies):
 | `test-yt-fmt.js` | YouTube subtitle body parsing for JSON3 / VTT / XML |
 | `test-yt-bridge.js` | MAIN-world bridge: track forwarding, videoId validation, handshake resend, request interception |
 | `test-css-structure.js` | CSS structural audit (brace balance, dangling commas, empty rules) |
+| `test-translate.js` | AI track: batch chunking, gtx parsing, fallback to per-line when counts mismatch, MyMemory fallback, virtual-track selection & body retrieval, LLM endpoint normalization |
+| `test-translate-flow.js` | (needs `npm i jsdom`) end-to-end run of `content.js`: auto-translate → build translated track → assign as secondary → switch primary track |
 
 ```bash
 node test-parse.js
 node test-lemma.js
-# ...
+node test-translate.js
+# end-to-end (optional dependency)
+npm i jsdom && node test-translate-flow.js && node test-translate-flow.js has-zh
 ```
 
 ## Version highlights (selected)
 
+- **v0.7.30** **Split floating-window opacity into two independent controls** — *background* opacity and *text* opacity are now separate, so dimming the background no longer washes out the subtitle text. The notebook's **"online lookup" now also routes through the LLM** (when configured), falling back to the online dictionary, instead of always using online translation.
+- **v0.7.28** Added **fullscreen support**: entering HTML fullscreen re-parents the panel into the fullscreen element (otherwise nothing outside it gets painted), auto-switches to floating mode, and restores everything on exit.
+- **v0.7.27** Added an **LLM translation engine** (any OpenAI-compatible endpoint) with a **Test connection** button, preset providers, and relay fallback to free engines so a partial LLM result still yields a complete track.
+- **v0.7.26** Added the **AI Chinese track**: auto-translates the whole CC track into a selectable virtual track, assigns it as the dual-subtitle track, with the manual **"译中文"** button and per-video caching.
 - **v0.7.25** Fixed the floating window breaking (a CSS dangling comma merged the hidden-selector group into a new rule); added the CSS structure audit script.
 - **v0.7.24** Floating-window live row is now **word-clickable** (click to look up, double-click to save), with a content key to prevent per-frame rebuilds.
 - **v0.7.23** Click-to-shadow now **honors the Pause toggle**; diagnostics can **go back** and copy the report; the notebook **shows local-dictionary definitions proactively** + lemmatization (`created → create`) + edit-word / online-lookup.
@@ -139,7 +151,8 @@ node test-lemma.js
 ## Privacy
 
 - All settings, vocabulary and local dictionaries live in your browser — **nothing is uploaded**.
-- Network requests happen only for: word lookup (dictionaryapi.dev / Wiktionary) and subtitle fetching (Bilibili / YouTube).
+- Network requests happen only for: word lookup (dictionaryapi.dev / Wiktionary), subtitle fetching (Bilibili / YouTube), and **translation when you turn on the AI Chinese track** (Google / MyMemory, or the LLM endpoint you configured yourself).
+- The LLM API key is stored locally and never synced to your browser account.
 - No analytics, no tracking, no accounts.
 
 ## License
@@ -158,6 +171,8 @@ Released under the [MIT License](LICENSE).
 - 右侧**逐句字幕列表**，播放时当前行自动高亮、自动滚动定位。
 - **多轨道选择**：列出视频所有 CC 轨道（如 English / 中文 / 日本語），自动优先选**非中文原文轨道**（学外语就该看原文）。
 - **双语叠显**：主轨道 + 对照轨道同时显示，可单独指定第二条轨道（如"英文原文 + 中文对照"）。
+- **AI 译文轨道**：CC 只有原文、没有「母语」轨道时，自动把整条字幕翻译成**你的母语**，**生成一条新的「（AI 翻译）」轨道**——它跟原生轨道一样出现在下拉里，可选为主轨道（列表全母语），默认自动挂到「对照」位（窗口化浮窗里原文下方叠一行母语译文）。按钮文案「译中文」也会跟随母语变化。也可点面板上的 **「译中文」** 手动触发 / 中途停止。
+- **翻译引擎三选一**：**大模型 API**（DeepSeek / 硅基流动 / 智谱 / Kimi / 通义 / OpenAI…，质量最好）→ **Google 免费端点** → **MyMemory**（国内通常可达）。默认「自动」按这个顺序接力：大模型限流只译出一半时，剩下的自动由免费接口补上，轨道不会缺行。
 - **点击跟读（▶）**：跳转到该句开头播放；**点句是否自动暂停，跟随「暂停」开关**——开关关着就连续播放、开着就放完这一句停下。
 - **实时字幕行**：显示当前时间点对应的字幕，**逐词可点**。
 - **下载该句音频（⬇）**：用 `tabCapture` 录下那几秒标签页音频，存为 `line_N.webm`。
@@ -167,7 +182,8 @@ Released under the [MIT License](LICENSE).
 - 查词来源可在设置里切换：
   - **本地词库（默认最高优先级）**：导入的整本词典命中即返回，**离线、零延迟**；
   - **在线词典**：`dictionaryapi.dev` → Wiktionary 兜底；
-  - **本地欧路词典**：通过 `eudic://` 官方 URL Scheme 唤起本机欧路查词（支持日语等任意语种）。
+  - **本地欧路词典**：通过 `eudic://` 官方 URL Scheme 唤起本机欧路查词（支持日语等任意语种）；
+  - **大模型 AI 翻译（质量最好）**：把单词连同**所在句子语境**一起问你配置的大模型，返回「词性 / 释义 / 说明 / 例句」结构化卡片；**双击存生词时自动把译文写进注释**。
 - **本地词库可直接导入词典文件**：支持牛津 / CSDN 等下载的纯文本 TXT 词典（每行一个单词、下接 `n./v./a./ad./abbr.` 等词性释义行），也支持 `单词<TAB或空格或冒号>释义` 及 JSON；**自动识别 GBK / UTF-8 编码**，支持「导入前清空」整本替换与一键清空。
 
 ### 生词本与复习
@@ -179,7 +195,10 @@ Released under the [MIT License](LICENSE).
 - **独立生词本页面**（`vocab.html`）：不打开视频也能用，可作为书签直接访问。支持**导出 / 导入 JSON 备份**。
 
 ### 界面
+- **母语 / 界面语言**：设置里的「母语 / 译文语言」下拉决定字幕翻译成什么语言，**面板界面文字也跟随母语**（内置中文 / English / 日本語 / 한국어 四套；其它母语界面仍显示中文，译文语言本身不受限）。
 - **窗口化浮窗（▢）**：面板收成一个小窗，只显示当前字幕一行（可双语两行），**可拖动（鼠标 + 触屏）**、**可逐词点查**——适合放视频角落里极简跟读。
+- **全屏浮窗透明度可调（背景 / 文字分开）**：设置 →「浮窗与外观」里有**两个独立滑块**——「浮窗背景透明度」和「浮窗文字透明度」。调暗背景不会再把字幕文字一起调糊，二者互不影响；侧边固定面板始终不透明。
+- **全屏也能浮窗**：进真正全屏时，面板会被临时挂载到全屏元素里（全屏下浏览器只绘制全屏元素及其后代，挂在 body 上的会被整棵裁掉），并自动切成浮窗模式；退出全屏再搬回原处、还原原来的窗口化状态。
 - **最小化（－）**：整个面板收成标题小条。
 - **诊断面板**：一键导出页面结构 / 字幕来源 / 抓取详情，出问题时点一下「复制报告」即可反馈定位。
 
@@ -189,8 +208,38 @@ Released under the [MIT License](LICENSE).
 |---|---|---|
 | **Bilibili** | ✅ 完整支持 | 走 B 站字幕 API（`x/player/wbi/v2`，需登录态），普通视频 / 影视番剧均可 |
 | **YouTube** | ✅ 完整支持 | 主世界脚本提取 `captionTracks`；正文兼容 **JSON3 / WebVTT / XML** 三种格式；SPA 切视频自动重解析 |
+| 翻译引擎 | ✅ 免 Key / 可选填 Key | 默认走 Google 免费端点（`translate_a/t`，`client=gtx`）→ MyMemory，**均不需 API Key**；也可选填任意 OpenAI 兼容的大模型接口提升译文质量 | |
 
 > 前提：视频**必须有可选的 CC 字幕轨道**。UP 主/作者烧进画面的**硬字幕**、以及浏览器自带的 **AI 实时听译字幕**（渲染在内核私有层，不在网页 DOM 内）都无法读取。
+
+### 大模型翻译接口怎么填（可选）
+
+默认那套免费方案能跑，但**机翻质量一般**；想让译文像人翻的，就在插件设置 →「AI 中文字幕」里勾上**用大模型 API 翻译**，填三样东西：
+
+| 字段 | 填什么 | 举例 |
+|---|---|---|
+| **Base URL** | 厂商给的 OpenAI 兼容地址 | `https://api.deepseek.com` |
+| **模型名** | 控制台里的模型 ID，**照抄** | `deepseek-flash` |
+| **API Key** | 平台创建的密钥（`sk-` 开头那串） | `sk-xxxxxxxx` |
+
+填完一定点一下 **「测试连接」**——它会真翻一句 `Good morning, everyone.` 并把结果显示出来。常见报错对照：**401/403 = Key 错**，**404 = 地址或模型名错**，**429 = 限流/额度用尽**。
+
+各家的推荐值（**模型名随时会变，以各家控制台为准**）：
+
+| 平台 | Base URL | 模型 | 费用 |
+|---|---|---|---|
+| **DeepSeek** | `https://api.deepseek.com` | `deepseek-flash` | 不免费但极便宜：输入约 $0.15 / 百万 tokens，输出约 $0.6。充 10 元能用很久 |
+| **硅基流动** | `https://api.siliconflow.cn/v1` | **免费填** `tencent/Hunyuan-MT-7B` | 这个是腾讯的**翻译专用模型**，当前输入输出免费（需实名；免费名单会调整，看 siliconflow.cn/pricing） |
+| **智谱 GLM** | `https://open.bigmodel.cn/api/paas/v4` | `glm-4-flash` | Flash 系列长期免费，新用户另有免费 tokens |
+| Moonshot / Kimi | `https://api.moonshot.cn/v1` | `moonshot-v1-8k` | 付费，有赠送额度 |
+| 阿里云百炼 | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen-plus` | 新人有免费额度 |
+| 火山方舟 | `https://ark.cn-beijing.volces.com/api/v3` | 填**接入点 ID**（`ep-xxx`） | 部分模型有免费额度 |
+| OpenAI / Groq | `https://api.openai.com/v1` · `https://api.groq.com/openai/v1` | `gpt-4o-mini` · `llama-3.3-70b-versatile` | 国内通常需代理 |
+| 本地 Ollama | `http://localhost:11434/v1` | `qwen2.5:7b` | 完全离线免费，速度看本机 |
+
+> ⚠️ **DeepSeek 特别注意**：老教程里的 `deepseek-chat` / `deepseek-reasoner` **已于 2026-07-24 停用**，现在官方模型名是 **`deepseek-flash`**（V4.1 Flash）。照着旧教程填会直接报错。
+>
+> API Key 只存在本机（`chrome.storage.local`），**不会**同步到浏览器账号，也不参与任何上传。
 
 ## 安装（本地加载，无需打包发布）
 
@@ -209,7 +258,11 @@ Released under the [MIT License](LICENSE).
 
 ## 使用 tips
 
+- **全屏看视频**：按视频的全屏按钮（或双击视频）进真正全屏后，面板会自动切成浮窗叠在画面上，拖标题栏可挪位置；退出全屏会自动还原成原来的样子和位置。B 站的「网页全屏」不用特殊处理，浮窗照样在。
 - **学外语先看原文**：面板会自动选非中文轨道；想要"原文 + 中文对照"，在「对照」下拉里选中文轨，然后窗口化，浮窗里就会叠两行。
+- **只有英文 CC、没有中文字幕**：字幕加载完会自动翻译成一条「中文（AI 翻译）」轨道并挂到对照位，状态栏会显示进度（`正在翻译成中文… 120/300 行`）；想手动来就点「译中文」，翻译中点它可停止。译文按视频缓存，重看不会重复翻译。
+- **翻译失败 / 太慢**：Google 端点在国内通常需要代理；若状态栏提示失败，到插件设置 → AI 中文字幕 → 把引擎改成 **MyMemory**（免 Key，国内通常可达，质量一般）。想要好译文就填个大模型接口（见上文），推荐先用硅基流动的免费翻译模型 `tencent/Hunyuan-MT-7B` 试。
+- **换了引擎想重翻**：译文按「视频 + 轨道 + 目标语言 + 引擎」缓存，所以换引擎后在面板点一次「译中文」即可用新引擎重翻；同一个配置下重复点会直接读缓存。
 - **想连续听**：把「暂停」开关关掉，点某句就是从该句起连续播放；打开开关才是"放完一句停"。
 - **词典导入后查不到词**：多半是生词存的是变形（`written`/`studies`），点 `✎ 改词` 改成原形，或依赖自动词形还原；若整本词典都没释义，检查是否导入成功（生词本页 → 📖 本地词库）。
 - **独立生词本**：把 `chrome-extension://<扩展ID>/vocab.html` 存成书签，随时复习，不用开视频。
@@ -222,6 +275,11 @@ Released under the [MIT License](LICENSE).
 - **音频下载是 webm/opus**：非 mp3，任意播放器可播，需要 mp3 可自行转码。
 - **二进制词典不支持**：欧路 MDX / StarDict 等二进制格式无法在扩展内解析，需先转成纯文本。
 - **日语等无空格语言**：整句会是一个可点单元（在线词典的日语支持也较弱，可走欧路本地词库）。
+- **免费翻译接口有额度**：Google 端点随时可能限流（429），MyMemory 匿名额度约每日数千字符；长视频可能只翻译出一部分，隔一会再点「译中文」可继续。译文是机器翻译，别当标准答案。
+- **超长视频只译前 1500 行**：再长会让免费接口直接限流到全线失败，宁可先给前半段。
+- **自定义大模型域名要授权一次**：DeepSeek / 硅基流动 / 智谱 / Kimi / 通义 / 火山 / OpenAI / Groq 已内置在 `host_permissions` 里，**直接用不用授权**；填了列表外的中转站域名时，点「测试连接」会弹一次授权请求，允许后后台才能发出去（否则连错误都看不到，会被内核直接拦掉）。
+- **扩展是自签的本地加载版**：没有上架商店，每次更新要到扩展管理页走「开发者模式 → 加载已解压的扩展程序 / 刷新」。
+- **极少数网站全屏对象是 `<video>` 自己**：这种情况下任何 DOM 都画不上去（`<video>` 的子元素一律不渲染），扩展会尝试把全屏对象换成上层容器；若浏览器以「无用户手势」为由拒绝，就维持现状——浮窗不会显示，但你的全屏不会被打断。B 站 / YouTube 全屏的都是播放器容器，不受影响。
 
 ## 目录结构
 
@@ -231,8 +289,8 @@ lang-learn-extension/
 ├── content.js             # 页面主逻辑：字幕拉取/解析、列表、跟读、查词、生词、复习、浮窗、诊断
 ├── content.css            # 面板 / 浮窗 / 弹层样式
 ├── yt-main.js             # YouTube 主世界脚本：读播放器响应、截获字幕请求，postMessage 转发
-├── background.js          # Service Worker：查词转发、词形还原、批量本地词库查询
-├── popup.html/js/css      # 工具栏弹窗：开关、查词来源、生词快速查看
+├── background.js          # Service Worker：查词转发、词形还原、批量本地词库查询、字幕整批翻译
+├── popup.html/js/css      # 工具栏弹窗：开关、查词来源、AI 中文字幕设置、生词快速查看
 ├── vocab.html / vocab.js  # 独立生词本页：复习、导出导入、本地词库管理
 ├── test-*.js              # Node 测试（见下）
 ├── LICENSE                # MIT 许可证
@@ -253,15 +311,24 @@ lang-learn-extension/
 | `test-yt-fmt.js` | YouTube 字幕正文三格式（JSON3 / VTT / XML）解析 |
 | `test-yt-bridge.js` | 主世界桥接：轨道转发、videoId 校验、握手重发、请求截获 |
 | `test-css-structure.js` | CSS 结构体检（括号配平、悬挂逗号、空规则） |
+| `test-translate.js` | AI 译文轨道：批量分组、gtx 解析、条数不符降级逐条、MyMemory 回退、虚拟轨道挑选与取正文 |
+| `test-translate-flow.js` | （需 `npm i jsdom`）端到端跑 `content.js`：自动翻译 → 生成译文轨道 → 挂对照位 → 切主轨道 |
+| `test-fullscreen.js` | （需 `npm i jsdom`）全屏浮窗：进全屏改挂到全屏容器、自动切浮窗、退出还原；`<video>` 全屏的换容器补救 |
 
 ```bash
 node test-parse.js
 node test-lemma.js
-# ...
+node test-translate.js
+# 端到端（可选依赖）
+npm i jsdom && node test-translate-flow.js && node test-translate-flow.js has-zh && node test-fullscreen.js
 ```
 
 ## 主要版本历程（节选）
 
+- **v0.7.30** 浮窗透明度**拆分为两个独立滑块**：「背景透明度」与「文字透明度」分开调，调暗背景不再连累字幕文字变糊；生词本「🔍 联网查」**在没有释义时也会走大模型**（已配置大模型 API 时优先，命中不到再退回在线词典），不再只走在线翻译。
+- **v0.7.28** 新增**全屏浮窗**：进 HTML 全屏时把面板临时挂到全屏元素里（否则会被整棵子树裁掉看不见），自动切浮窗模式，退出全屏自动还原挂载点与原来的窗口化状态。
+- **v0.7.27** 新增**大模型翻译引擎**（任意 OpenAI 兼容接口）：预设厂商 + 一键**测试连接** + 地址 `/v1` 容错；多引擎接力——大模型只译出一部分时，剩余行由免费接口自动补齐，轨道不缺行。
+- **v0.7.26** 新增 **AI 中文译文轨道**：无中文 CC 时自动翻译整条字幕，生成可选的「中文（AI 翻译）」虚拟轨道并挂到对照位；「译中文」按钮可手动触发/停止；译文按视频缓存。
 - **v0.7.25** 修复窗口化浮窗失效（CSS 悬挂逗号把隐藏组并进新规则）；新增 CSS 结构体检脚本。
 - **v0.7.24** 窗口化浮窗字幕行改为**逐词可点**（点词查词 / 双击存词），并加 key 去重防止每帧重建。
 - **v0.7.23** 点句跟读**尊重暂停开关**；诊断面板可**返回**并支持复制报告；生词本**主动显示本地词库释义** + 词形还原（`created → create`）+ 改词 / 联网查。
@@ -278,7 +345,7 @@ node test-lemma.js
 ## 隐私
 
 - 所有设置、生词、本地词典均存于浏览器本地，**不上传任何服务器**。
-- 网络请求仅发生在：查词（dictionaryapi.dev / Wiktionary）、拉取视频字幕（B 站 / YouTube）。
+- 网络请求仅发生在：查词（dictionaryapi.dev / Wiktionary）、拉取视频字幕（B 站 / YouTube）、以及开启翻译时的整批字幕翻译（Google / MyMemory）。翻译只发送字幕文本，不发送任何身份信息。关闭「AI 中文字幕」开关后不再发起翻译请求。
 - 无统计、无追踪、无账号体系。
 
 ## 许可
