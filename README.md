@@ -1,9 +1,9 @@
-# Language Learning Video Assistant · Browser Extension
+# LingoReel · Language Learning Video Assistant (Browser Extension)
 
 > Turn **Bilibili / YouTube** videos into study material: a clickable subtitle list, shadowing, word lookup, vocabulary notebook, spaced-repetition review, and an offline dictionary.
 > All data stays in your browser (`chrome.storage.local`) — **no login, no account, nothing uploaded**.
 
-**Version v0.7.36** · MV3 · Chrome / Edge / Quark / Kiwi · MIT License
+**Version v1.0.0** · MV3 · Chrome / Edge / Quark / Kiwi · MIT License
 
 [**English**](#-english) · [**中文**](#-中文)
 
@@ -13,7 +13,7 @@
 
 ## What it does
 
-The hard part of learning from foreign-language videos isn't *seeing* subtitles — it's turning them into studyable material. This extension splits the CC track into a per-sentence list and wires up a full loop: **shadow → look up → save → review**.
+The hard part of learning from foreign-language videos isn't *seeing* subtitles — it's turning them into studyable material. **LingoReel** splits the CC track into a per-sentence list and wires up a full loop: **shadow → look up → save → review**.
 
 ### Subtitles
 - **Sentence-by-sentence subtitle list** on the right, with the current line auto-highlighted and auto-scrolled.
@@ -140,6 +140,8 @@ npm i jsdom && node test-translate-flow.js && node test-translate-flow.js has-zh
 
 ## Version highlights (selected)
 
+- **v1.0.0** **First public release (Chrome Web Store / Edge Add-ons).** Branded **LingoReel**; ships store-listing assets — 1280×800 screenshots plus 440×280 / 920×680 promo tiles.
+- **v0.7.37** **Branding for store release** — the extension is now named **LingoReel** (Chinese: 视频外语跟读助手), with a new blue-purple gradient icon (play button + subtitle bars; drawn at 1024 px and shipped at 16/48/128). The manifest `description` was rewritten to fit the Chrome Web Store's 132-character limit (the old one was ~180 chars and would have been rejected on upload).
 - **v0.7.36** **Stop at the right line, and translated lines stream in.** ① *"One line plays two sentences"*: ASR caption segmentation doesn't match what your ear hears — a cue's `to` often extends into the next sentence (or the same sentence is split into overlapping rolling events). The auto-pause stop point is now **clamped to where the next distinct line starts** (`effectiveCueEnd`), so replaying one line stops at that line; ordinary CC (where `next.from == cur.to`) is mathematically unchanged. Because the clamp can land the pause between two cues' `to` values, the "just-heard line is locked" state now uses the row recorded when the target was armed instead of a ±0.05s lookup. ② *Progressive translation*: translation is now chunked (first batch **8 lines**, then 20), and **every batch is written to the translation track and re-rendered immediately**, so Chinese appears in the floating window within seconds instead of after the whole 200+ line job; the status bar shows lines done / on screen, Stop keeps the partial result, and only a nearly-complete result is cached. Also removed the dead `tabCapture` / `downloads` audio-download code and its permissions, and the diagnostic report now shows the clamped play-end per line plus progressive-translation progress.
 - **v0.7.35** **Auto-pause actually pauses now.** Two root causes, both fixed: ① auto-pause lived inside the `timeupdate` callback, but YouTube builds its `<video>` element with JS (and swaps it on SPA navigation) — if the element didn't exist when the content script booted, the listener was never attached and auto-pause, highlighting and the live line all failed silently; there's now a 1s self-healing re-attach plus a dedicated 150ms timer that drives auto-pause independently of `timeupdate`. ② The target was re-armed from "the current line's end" on every tick, but YouTube's auto-generated captions often split one sentence into several events whose `to` keeps extending — so the target kept sliding forward and was never reached (measured: target at 8.9s while playback sat at 6.0s → never paused). The target is now armed **once** and never pushed later. Also: a 0.9s guard after a programmatic seek prevents "press ▶ and it pauses instantly", and the diagnostic report now shows whether video events are attached, the auto-pause state/target/last pause, and subtitle-timeline overlap stats.
 - **v0.7.34** **Fixes & polish** — the 🎤 button now reliably sits at the **end of the subtitle line** (the text item used `flex-basis: auto`, whose max-content width pushed the button onto a new row; now `flex-basis: 0`). The **"Back to subtitle list"** button is now readable (it reused a white-on-transparent style meant for the dark title bar, so it was white-on-white and effectively invisible). With auto-pause on, the live line **no longer jumps to the next cue while paused** (caption boundaries are shared, so at `t == prev.to` the cursor used to slide forward — now the line you just heard is locked until you play or seek, which is what made ▶ play one line while 🎤 targeted the next). The small-window shadowing buttons are now **hideable** via the 🎤 toggle in the title bar (choice is remembered).
@@ -180,7 +182,7 @@ Released under the [MIT License](LICENSE).
 
 ## 它能做什么
 
-看外语视频最难的不是"看不到字幕"，而是**把字幕变成能学的材料**。这个扩展把视频里的 CC 字幕拆成逐句列表，接上「跟读 → 查词 → 存生词 → 复习」一条完整的学习闭环。
+看外语视频最难的不是"看不到字幕"，而是**把字幕变成能学的材料**。**LingoReel（视频外语跟读助手）**把视频里的 CC 字幕拆成逐句列表，接上「跟读 → 查词 → 存生词 → 复习」一条完整的学习闭环。
 
 ### 字幕层
 - 右侧**逐句字幕列表**，播放时当前行自动高亮、自动滚动定位。
@@ -349,6 +351,8 @@ npm i jsdom && node test-translate-flow.js && node test-translate-flow.js has-zh
 
 ## 主要版本历程（节选）
 
+- **v1.0.0** **首个公开发布版（上架 Chrome Web Store / Edge Add-ons）。** 定名 LingoReel，配套商店素材（1280×800 截图 + 440×280 / 920×680 宣传图）。
+- **v0.7.37** **上架品牌化**：插件更名为 **LingoReel**（视频外语跟读助手），换上蓝紫渐变新图标（播放键 + 字幕条，1024px 母版绘制、随包提供 16/48/128 三档）；manifest 的 `description` 精简到 Chrome 商店 132 字上限以内（原描述约 180 字，上传会被拒）。
 - **v0.7.36** **停在正确的一行 + 译文边翻边上屏。** ①「点一句、读两句才停」：ASR 字幕的分段和人耳听到的句子并不一致——某行的 `to` 常常越界到下一句里（也可能是同一句被拆成多条互相重叠的滚动事件）。现在自动暂停的停止点会**收紧到"下一句真正开始的地方"**（`effectiveCueEnd`），复读一行就停在这一行；普通 CC（下一行 `from == 本行 to`）算法上完全不变。「刚听完的那一行要锁住」也改成直接用武装目标时记下的那一行——因为收紧后暂停点可能落在两条 cue 的 `to` 之间，按时间反查会失手。②**渐进式翻译**：翻译改成**分块**（首块只 **8 行**，之后每块 20 行），**每译完一块立刻写进译文轨道并刷新**，中文几秒内就开始在浮窗里往外冒，不用等 200 多行全部译完；状态栏显示「已翻 N/M · 已上屏 K」，中途点「停止」保留已翻部分，且**只在基本翻全时才写缓存**。另外删掉了已废弃的 `tabCapture` / `downloads` 单句音频下载代码及其权限；诊断报告新增「每行的实播结束点」与「渐进式翻译进度」。
 - **v0.7.35** **自动暂停真的会暂停了。** 两个根因一起修：① 自动暂停原来写在 `timeupdate` 回调里，而 YouTube 的 `<video>` 是 JS 动态建立的（SPA 换视频还会换元素）——内容脚本启动时元素还不存在的话，监听就永远没挂上，自动暂停连同高亮、实时行一起静默失效；现在加了 1s 自愈重挂，并用一个独立的 150ms 时钟驱动自动暂停，不再依赖 `timeupdate`。② 原来每帧都用「当前行的 to」重设目标，而 YouTube 自动生成字幕常把同一句拆成多条、`to` 逐条往后延伸，目标于是被一直往前推、永远追不上（实测：时间才走到 6.0s，目标已被推到 8.9s → 从不暂停）；现在目标**只武装一次**，播放过程中绝不再往后推。另外：程序化跳转后有 0.9s 保护期，避免"一按 ▶ 就立刻暂停"；诊断报告新增「video 事件是否挂上 / 自动暂停状态·当前目标·上次暂停于 / 字幕时间轴重叠统计」三项体检。
 - **v0.7.34** **三处修好**：① 🎤 稳定贴在**字幕行末尾**（文字项原来是 `flex-basis: auto`，它的 max-content 宽度会把按钮挤到下一行，改成 `flex-basis: 0`）；② 诊断页的「返回字幕列表」按钮**能看见了**（它复用了给深色标题栏写的白字半透明白底样式，落在浅色区就白字白底）；③ 开着自动暂停时，**停住后实时行不再滑到下一句**（字幕首尾相接，`t` 恰好等于上一句的 to 时会取到下一句——也就是"点播放是这句、点录音变下一句"的原因；现在会把刚听完的那一句锁住，播放或拖进度条后解锁）。小窗里的跟读按钮也**可以隐藏**了：标题栏的 🎤 开关，选择会被记住。
